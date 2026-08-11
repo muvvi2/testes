@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { User as UserIcon, MapPin, Tags, Calendar, Crown, Wallet, Briefcase, Fingerprint, ShieldCheck, MessageSquare, Save, Inbox, Megaphone, Upload, Check, X, Globe, Sliders } from 'lucide-react';
+import { User as UserIcon, MapPin, Tags, Calendar, Crown, Wallet, Briefcase, Fingerprint, ShieldCheck, MessageSquare, Save, Inbox, Megaphone, Upload, Check, X, Globe, Sliders, Info, DollarSign } from 'lucide-react';
 import { useApp } from '@/AppContext';
 import { useToast } from './ui/Toast';
 import { Avatar } from './ui/Avatar';
@@ -327,6 +327,11 @@ function SpecialtiesTab({ me, onToggleCat, onSave }: { me: any; onToggleCat: (ca
   const [selectedMacro, setSelectedMacro] = useState(MACRO_CATEGORIES[0].id);
   const filteredCategories = CATEGORIES.filter(cat => cat.macro === selectedMacro);
 
+  const hRate = Number(hourlyRate) > 0 ? Number(hourlyRate) : (Number(dailyRate) > 0 ? Number(dailyRate) / 8 : 25);
+  const dRate = Number(dailyRate) > 0 ? Number(dailyRate) : hRate * 8;
+  const firstHourRate = Math.round(hRate * 1.4 * 100) / 100;
+  const extraHourRate = Math.round(hRate * 1.25 * 100) / 100;
+
   return (
     <section className="rounded-2xl border border-neutral-200 bg-white p-6 dark:border-neutral-800 dark:bg-neutral-900 shadow-sm space-y-6">
       <h2 className="flex items-center gap-2 font-display text-lg font-bold text-neutral-900 dark:text-white"><Tags className="h-5 w-5 text-primary-500" /> Especialidades e Valores</h2>
@@ -382,6 +387,33 @@ function SpecialtiesTab({ me, onToggleCat, onSave }: { me: any; onToggleCat: (ca
         <Input label="Valor Padrão da Hora (R$/h)" type="number" value={hourlyRate} onChange={(e) => setHourlyRate(e.target.value)} />
         <Input label="Valor Padrão da Diária (R$)" type="number" value={dailyRate} onChange={(e) => setDailyRate(e.target.value)} />
       </div>
+
+      {/* CARD DE PRÉVIA DE GANHOS E REGRAS DE HORA */}
+      <div className="rounded-xl border border-primary-200 bg-primary-50/50 p-4 dark:border-primary-500/30 dark:bg-primary-500/10 space-y-3">
+        <div className="flex items-center gap-2 font-bold text-xs text-primary-800 dark:text-primary-300">
+          <DollarSign className="h-4 w-4 text-primary-600" />
+          <span>Prévia Automática dos Seus Ganhos nas Contratações Diretas:</span>
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+          <div className="bg-white dark:bg-neutral-800 p-2.5 rounded-lg border border-neutral-200 dark:border-neutral-700">
+            <p className="text-[10px] text-neutral-400">1ª Hora (Com saída +40%)</p>
+            <p className="font-bold text-neutral-900 dark:text-white mt-0.5">{formatCurrency(firstHourRate)}</p>
+          </div>
+          <div className="bg-white dark:bg-neutral-800 p-2.5 rounded-lg border border-neutral-200 dark:border-neutral-700">
+            <p className="text-[10px] text-neutral-400">Horas Normais (2ª a 7ªh)</p>
+            <p className="font-bold text-neutral-900 dark:text-white mt-0.5">{formatCurrency(hRate)}/h</p>
+          </div>
+          <div className="bg-white dark:bg-neutral-800 p-2.5 rounded-lg border border-neutral-200 dark:border-neutral-700">
+            <p className="text-[10px] text-neutral-400">Diária Fechada (8 horas)</p>
+            <p className="font-bold text-neutral-900 dark:text-white mt-0.5">{formatCurrency(dRate)}</p>
+          </div>
+          <div className="bg-white dark:bg-neutral-800 p-2.5 rounded-lg border border-neutral-200 dark:border-neutral-700">
+            <p className="text-[10px] text-neutral-400">Hora Extra (a partir da 9ªh +25%)</p>
+            <p className="font-bold text-neutral-900 dark:text-white mt-0.5">{formatCurrency(extraHourRate)}/h</p>
+          </div>
+        </div>
+      </div>
+
       <Button className="mt-4" onClick={() => onSave({ hourlyRate: Number(hourlyRate), dailyRate: Number(dailyRate), categoryRates })}><Save className="h-4 w-4" /> Salvar valores</Button>
     </section>
   );
