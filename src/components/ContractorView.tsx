@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { Search, SlidersHorizontal, Plus, Megaphone, Store, Users, FileText, Pencil, MapPin, Navigation, Crown, Globe, Calendar, Clock, Trash2, Pause, Play, CheckCircle2 } from 'lucide-react';
+import { Search, SlidersHorizontal, Plus, Megaphone, Store, Users, FileText, Pencil, MapPin, Navigation, Crown, Globe, Calendar, Clock, Trash2, Pause, Play, CheckCircle2, Info } from 'lucide-react';
 import { useApp } from '@/AppContext';
 import { useToast } from './ui/Toast';
 import { Button } from './ui/Button';
@@ -16,9 +16,62 @@ import { VipSquareWidget } from './VipSquareWidget';
 import { EstablishmentEditModal } from './EstablishmentEditModal';
 import { Modal } from './ui/Modal';
 import { CATEGORIES, MACRO_CATEGORIES } from '@/mockData';
-import { formatCurrency, formatDateBR, distanceBetween, isWithinRadius, isAvailableToday, isAvailableTomorrow, isFreelancerAvailableOn, isEstablishmentOnTrial, trialDaysLeft, contractStatusLabel, contractStatusTone } from '@/utils';
-import { supabase } from '@/lib/supabase';
+import { formatCurrency, formatDateBR, distanceBetween, isWithinRadius, isAvailableToday, isAvailableTomorrow, isFreelancerAvailableOn, isEstablishmentOnTrial, trialDaysLeft, contractStatusLabel, contractStatusTone, getIntermediationFeePercent, calculateFees } from '@/utils';
 import type { User, Job, Contract } from '@/types';
+
+export function calculateDirectHireFee(
+  hourlyRate: number,
+  dailyRate: number,
+  hours: number
+): { freelancerFee: number; breakdown: { label: string; amount: number }[] } {
+  const hRate = hourlyRate > 0 ? hourlyRate : (dailyRate > 0 ? dailyRate / 8 : 25);
+  const dRate = dailyRate > 0 ? dailyRate : hRate * 8;
+
+  if (hours === 8) {
+    return {
+      freelancerFee: dRate,
+      breakdown: [{ label: 'Diária Padrão (8h)', amount: dRate }]
+    };
+  }
+
+  if (hours < 8) {
+    const firstHourPrice = Math.round(hRate * 1.4 * 100) / 100;
+    const additionalHoursPrice = (hours - 1) * hRate;
+    const totalCalculated = firstHourPrice + additionalHoursPrice;
+
+    if (totalCalculated >= dRate) {
+      return {
+        freelancerFee: dRate,
+        breakdown: [{ label: `Turno de ${hours}h (Teto da Diária)`, amount: dRate }]
+      };
+    }
+
+    const breakdown = [
+      { label: '1ª Hora com adicional (+40%)', amount: firstHourPrice }
+    ];
+    if (hours > 1) {
+      breakdown.push({ label: `${hours - 1}h adicionais (${formatCurrency(hRate)}/h)`, amount: additionalHoursPrice });
+    }
+
+    return {
+      freelancerFee: totalCalculated,
+      breakdown
+    };
+  }
+
+  const extraHours = hours - 8;
+  const extraHourRate = Math.round(hRate * 1.25 * 100) / 100;
+  const extraTotal = extraHours * extraHourRate;
+  const freelancerFee = dRate + extraTotal;
+
+  return {
+    freelancerFee,
+    breakdown: [
+      { label: 'Diária Padrão (8h)', amount: dRate },
+      { label: `${extraHours}h extras (+25% = ${formatCurrency(extraHourRate)}/h)`, amount: extraTotal }
+    ]
+  };
+}
 
 export function ContractorView() {
   const { currentUser, data, requestHire, categoryById, deleteJob, pauseJob } = useApp();
@@ -38,12 +91,13 @@ export function ContractorView() {
   const [dateFilter, setDateFilter] = useState<'any' | 'today' | 'tomorrow' | 'custom'>('any');
   const [customDate, setCustomDate] = useState('');
   const [viewing, setViewing] = useState<User | null>(null);
+  const [directHireTarget, setDirectHireTarget] = useState<User | null>(null);
+  const [directHours, setDirectHours] = useState<number>(8);
   const [escrowContract, setEscrowContract] = useState<Contract | null>(null);
   const [jobForm, setJobForm] = useState<{ open: boolean; editing: Job | null }>({ open: false, editing: null });
   const [editEstablishment, setEditEstablishment] = useState(false);
   const [viewVipPage, setViewVipPage] = useState(false);
   
-  // Estados para controlar os Modais dos Contadores Clicáveis
   const [showJobsModal, setShowJobsModal] = useState(false);
   const [showApplicantsModal, setShowApplicantsModal] = useState(false);
   const [showContractsModal, setShowContractsModal] = useState(false);
@@ -112,11 +166,20 @@ export function ContractorView() {
     return list;
   }, [data.users, origin, radiusKm, isUnlimited, macroFilter, category, minRating, dateFilter, customDate, query, sortBy, categoryById]);
 
-  const handleHire = (f: User) => {
-    const hours = 8;
-    const fee = f.dailyRate ?? 0;
-    if (fee <= 0) { notify('Este freelancer não definiu um valor de diária ainda.', 'warning'); return; }
-    const contract = requestHire(me.id, f.id, null, hours, fee);
+  const openDirectHireModal = (f: User) => {
+    setDirectHireTarget(f);
+    setDirectHours(8);
+  };
+
+  const confirmDirectHire = () => {
+    if (!directHireTarget) return;
+    const { freelancerFee } = calculateDirectHireFee(
+      directHireTarget.hourlyRate ?? 0,
+      directHireTarget.dailyRate ?? 0,
+      directHours
+    );
+    const contract = requestHire(me.id, directHireTarget.id, null, directHours, freelancerFee);
+    setDirectHireTarget(null);
     setEscrowContract(contract);
     notify('Solicitação de contratação enviada! Aguarde a confirmação do freelancer.');
   };
@@ -137,7 +200,7 @@ export function ContractorView() {
       {/* LAYOUT PRINCIPAL EM DUAS COLUNAS */}
       <div className="grid gap-6 lg:grid-cols-[280px_1fr] items-start">
         
-        {/* ================= COLUNA ESQUERDA ================= */}
+        {/* COLUNA ESQUERDA */}
         <aside className="space-y-6 w-full">
           <div className="w-full aspect-[600/900] overflow-hidden rounded-2xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900 shadow-sm">
              <VipSquareWidget pageType="establishments" slot={1} />
@@ -145,15 +208,14 @@ export function ContractorView() {
 
           {filtered[0] && (
             <div>
-              <FreelancerCard freelancer={filtered[0]} onHire={handleHire} onView={setViewing} distanceKm={distanceBetween(filtered[0].address, origin)} />
+              <FreelancerCard freelancer={filtered[0]} onHire={openDirectHireModal} onView={setViewing} distanceKm={distanceBetween(filtered[0].address, origin)} />
             </div>
           )}
         </aside>
 
-        {/* ================= COLUNA DIREITA ================= */}
+        {/* COLUNA DIREITA */}
         <div className="space-y-6">
           
-          {/* TOPO DIREITA: Perfil do Estabelecimento + Estatísticas Clicáveis */}
           <div className="space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 rounded-2xl border border-neutral-200 bg-white p-5 dark:border-neutral-800 dark:bg-neutral-900 shadow-sm">
               <div className="flex items-center gap-4">
@@ -186,7 +248,6 @@ export function ContractorView() {
               </div>
             )}
 
-            {/* CONTADORES TODOS CLICÁVEIS */}
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               <div onClick={() => setShowJobsModal(true)} className="cursor-pointer transition-transform hover:scale-[1.02]">
                 <CompactStatCard icon={Megaphone} label="Vagas publicadas" value={String(myJobs.length)} tone="primary" />
@@ -203,7 +264,6 @@ export function ContractorView() {
             </div>
           </div>
 
-          {/* CONTEÚDO ABAIXO DO PERFIL */}
           <div className="grid gap-6 lg:grid-cols-[1fr_320px] items-start">
             
             <div className="space-y-4">
@@ -263,7 +323,7 @@ export function ContractorView() {
               </div>
 
               <div className="grid gap-4 sm:grid-cols-2">
-                {filtered.slice(1).map((f) => <FreelancerCard key={f.id} freelancer={f} onHire={handleHire} onView={setViewing} distanceKm={distanceBetween(f.address, origin)} />)}
+                {filtered.slice(1).map((f) => <FreelancerCard key={f.id} freelancer={f} onHire={openDirectHireModal} onView={setViewing} distanceKm={distanceBetween(f.address, origin)} />)}
               </div>
               {filtered.length === 0 && (
                 <div className="rounded-2xl border border-dashed border-neutral-300 py-12 text-center dark:border-neutral-700">
@@ -272,7 +332,6 @@ export function ContractorView() {
               )}
             </div>
 
-            {/* SIDEBAR DIREITA */}
             <aside className="space-y-6">
               <div className="rounded-2xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900 shadow-sm">
                 <div className="mb-3 flex items-center justify-between">
@@ -304,7 +363,86 @@ export function ContractorView() {
         </div>
       </div>
 
-      {/* ================= MODAIS DOS CONTADORES ================= */}
+      {/* MODAL DE CONTRATAÇÃO DIRETA COM DURAÇÃO DE HORAS */}
+      {directHireTarget && (
+        <Modal open={!!directHireTarget} onClose={() => setDirectHireTarget(null)} title={`Contratar ${directHireTarget.name}`} size="md">
+          {(() => {
+            const feeInfo = calculateDirectHireFee(
+              directHireTarget.hourlyRate ?? 0,
+              directHireTarget.dailyRate ?? 0,
+              directHours
+            );
+            const feePercent = getIntermediationFeePercent(me, data.estVipPlans);
+            const { fee, total } = calculateFees(feeInfo.freelancerFee, feePercent);
+
+            return (
+              <div className="space-y-5">
+                <div className="flex items-center gap-3 rounded-xl border border-neutral-200 bg-neutral-50 p-3.5 dark:border-neutral-800 dark:bg-neutral-800/50">
+                  <Avatar src={directHireTarget.photo} alt={directHireTarget.name} size={48} />
+                  <div>
+                    <p className="font-semibold text-sm text-neutral-900 dark:text-white">{directHireTarget.name}</p>
+                    <p className="text-xs text-neutral-400">
+                      Hora Padrão: {formatCurrency(directHireTarget.hourlyRate ?? 25)}/h · Diária (8h): {formatCurrency(directHireTarget.dailyRate ?? 180)}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-xs font-semibold">
+                    <span className="text-neutral-600 dark:text-neutral-300">Duração do Turno de Trabalho:</span>
+                    <span className="font-bold text-primary-600 dark:text-primary-400 text-sm">{directHours} hora{directHours > 1 ? 's' : ''}</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={1}
+                    max={24}
+                    value={directHours}
+                    onChange={(e) => setDirectHours(Number(e.target.value))}
+                    className="w-full accent-primary-500"
+                  />
+                  <div className="flex justify-between text-[11px] text-neutral-400">
+                    <span>1h (Mínimo)</span>
+                    <span>8h (Diária)</span>
+                    <span>24h</span>
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900 space-y-2 text-xs">
+                  <p className="font-bold text-neutral-800 dark:text-neutral-200 border-b pb-2 dark:border-neutral-800 flex items-center gap-1">
+                    <Info className="h-3.5 w-3.5 text-primary-500" /> Detalhamento de Custos
+                  </p>
+                  
+                  {feeInfo.breakdown.map((item, idx) => (
+                    <div key={idx} className="flex justify-between text-neutral-600 dark:text-neutral-400">
+                      <span>{item.label}</span>
+                      <span className="font-semibold text-neutral-800 dark:text-neutral-200">{formatCurrency(item.amount)}</span>
+                    </div>
+                  ))}
+
+                  <div className="flex justify-between font-semibold text-neutral-900 dark:text-white pt-2 border-t dark:border-neutral-800">
+                    <span>Subtotal do Profissional</span>
+                    <span>{formatCurrency(feeInfo.freelancerFee)}</span>
+                  </div>
+
+                  <div className="flex justify-between text-neutral-500">
+                    <span>Taxa da Plataforma ({feePercent}%)</span>
+                    <span>{fee === 0 ? 'Isento (VIP)' : formatCurrency(fee)}</span>
+                  </div>
+
+                  <div className="flex justify-between text-sm font-extrabold text-primary-600 dark:text-primary-400 pt-2 border-t border-dashed dark:border-neutral-800">
+                    <span>Total no Escrow</span>
+                    <span>{formatCurrency(total)}</span>
+                  </div>
+                </div>
+
+                <Button fullWidth size="lg" onClick={confirmDirectHire}>
+                  Confirmar Contratação ({formatCurrency(total)})
+                </Button>
+              </div>
+            );
+          })()}
+        </Modal>
+      )}
 
       {/* 1. Modal de Vagas Publicadas */}
       <Modal open={showJobsModal} onClose={() => setShowJobsModal(false)} title={`Vagas Publicadas (${myJobs.length})`} size="md">
@@ -316,7 +454,7 @@ export function ContractorView() {
               <div key={job.id} className="flex items-center justify-between p-3.5 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-800/50">
                 <div>
                   <p className="font-semibold text-sm text-neutral-900 dark:text-white">{job.title}</p>
-                  <p className="text-xs text-neutral-400">{formatDateBR(job.date)} · {formatCurrency(job.value ?? job.dailyRate ?? 0)} · {job.applicants.length} candidato(s)</p>
+                  <p className="text-xs text-neutral-400">{formatDateBR(job.date)} · {formatCurrency(job.value ?? 0)} · {job.applicants.length} candidato(s)</p>
                 </div>
                 <div className="flex items-center gap-1">
                   <Button size="sm" variant="outline" onClick={() => { pauseJob(job.id); notify('Status alterado'); }}>
@@ -332,7 +470,7 @@ export function ContractorView() {
         </div>
       </Modal>
 
-      {/* 2. Modal de Candidaturas */}
+      {/* 2. Modal de Candidaturas — TRAVADO NO VALOR DA VAGA (job.value) */}
       <Modal open={showApplicantsModal} onClose={() => setShowApplicantsModal(false)} title="Candidaturas Recebidas" size="md">
         <div className="space-y-3 max-h-[60vh] overflow-y-auto">
           {myJobs.flatMap(j => j.applicants).length === 0 ? (
@@ -344,20 +482,28 @@ export function ContractorView() {
               return (
                 <div key={job.id} className="space-y-2">
                   <p className="text-xs font-bold text-primary-600 dark:text-primary-400 uppercase tracking-wider">Vaga: {job.title}</p>
-                  {applicantsList.map((applicant) => (
-                    <div key={applicant.id} className="flex items-center justify-between p-3 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-800/50">
-                      <div className="flex items-center gap-3">
-                        <Avatar src={applicant.photo} alt={applicant.name} size={36} />
-                        <div>
-                          <p className="font-semibold text-sm text-neutral-900 dark:text-white">{applicant.name}</p>
-                          <p className="text-xs text-neutral-400">Diária: {formatCurrency(applicant.dailyRate || job.value || 0)}</p>
+                  {applicantsList.map((applicant) => {
+                    const agreedValue = job.value > 0 ? job.value : (applicant.dailyRate || 0);
+
+                    return (
+                      <div key={applicant.id} className="flex items-center justify-between p-3 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-800/50">
+                        <div className="flex items-center gap-3">
+                          <Avatar src={applicant.photo} alt={applicant.name} size={36} />
+                          <div>
+                            <p className="font-semibold text-sm text-neutral-900 dark:text-white">{applicant.name}</p>
+                            <p className="text-xs text-neutral-400">Valor da Vaga: {formatCurrency(agreedValue)} · {job.hours}h</p>
+                          </div>
                         </div>
+                        <Button size="sm" onClick={() => { 
+                          requestHire(me.id, applicant.id, job.id, job.hours, agreedValue); 
+                          notify('Solicitação de contratação enviada!'); 
+                          setShowApplicantsModal(false); 
+                        }}>
+                          Contratar
+                        </Button>
                       </div>
-                      <Button size="sm" onClick={() => { requestHire(me.id, applicant.id, job.id, job.hours, applicant.dailyRate || job.value || 0); notify('Solicitação de contratação enviada!'); setShowApplicantsModal(false); }}>
-                        Contratar
-                      </Button>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               );
             })
@@ -411,7 +557,7 @@ export function ContractorView() {
                   <Button size="sm" variant="outline" onClick={() => { setViewing(freelancer); setShowNearbyModal(false); }}>
                     Ver Perfil
                   </Button>
-                  <Button size="sm" onClick={() => { handleHire(freelancer); setShowNearbyModal(false); }}>
+                  <Button size="sm" onClick={() => { openDirectHireModal(freelancer); setShowNearbyModal(false); }}>
                     Contratar
                   </Button>
                 </div>
@@ -421,7 +567,7 @@ export function ContractorView() {
         </div>
       </Modal>
 
-      {viewing && <FreelancerDetailModal freelancer={viewing} open={!!viewing} onClose={() => setViewing(null)} onHire={handleHire} />}
+      {viewing && <FreelancerDetailModal freelancer={viewing} open={!!viewing} onClose={() => setViewing(null)} onHire={openDirectHireModal} />}
       {escrowContract && <EscrowFlowModal contract={escrowContract} open={!!escrowContract} onClose={() => setEscrowContract(null)} />}
       <JobFormModal open={jobForm.open} onClose={() => setJobForm({ open: false, editing: null })} editing={jobForm.editing} establishment={me} />
       <EstablishmentEditModal establishment={me} open={editEstablishment} onClose={() => setEditEstablishment(false)} />
