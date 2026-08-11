@@ -256,7 +256,7 @@ export function EscrowFlowModal({ contract, open, onClose }: { contract: Contrac
               {paymentStage === 'card' && checkoutUrl && (
                 <div className="space-y-3 rounded-xl border border-secondary-200 bg-secondary-50 p-4 dark:border-secondary-500/30 dark:bg-secondary-500/10">
                   <p className="font-semibold text-secondary-800 dark:text-secondary-300">Checkout seguro do cartão</p>
-                  <p className="text-xs text-secondary-700 dark:text-secondary-400">Os dados do cartão serão preenchidos diretamente no provedor. Este contrato continua aguardando até o pagamento ser confirmado.</p>
+                  <p className="text-xs text-secondary-700 dark:text-secondary-400">Os dados do cartão serão preenchidos diretamente no provedor. Este contrato continua aguardando até o pagamento ser confirmed.</p>
                   <a href={checkoutUrl} target="_blank" rel="noreferrer" className="inline-flex w-full items-center justify-center rounded-lg bg-secondary-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-secondary-700">Abrir checkout do cartão</a>
                 </div>
               )}
