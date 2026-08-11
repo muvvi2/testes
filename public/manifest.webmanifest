@@ -1,0 +1,17 @@
+{
+  "name": "FreelaAgora — Contratação emergencial de freelancers",
+  "short_name": "FreelaAgora",
+  "description": "Marketplace de contratação emergencial de freelancers para bares, restaurantes, buffets e eventos.",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0f172a",
+  "theme_color": "#ff7a14",
+  "icons": [
+    { "src": "/image.png?v=2", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/image.png?v=2", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ],
+  "categories": ["business", "finance", "lifestyle"],
+  "lang": "pt-BR",
+  "dir": "ltr"
+}
