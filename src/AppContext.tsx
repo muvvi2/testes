@@ -368,7 +368,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [data, setData]);
 
-  // Pagamento descontando do saldo
   const payEscrow = useCallback((contractId: string, paymentMethod: 'wallet' | 'pix' | 'card' = 'wallet'): { ok: boolean; error?: string } => {
     if (!data) return { ok: false, error: 'Sistema carregando.' };
     const c = data.contracts.find((x) => x.id === contractId);
@@ -398,7 +397,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return { ok: true };
   }, [data, setData]);
 
-  // 1. O Freelancer solicita o check-in (Chegada ao local)
   const requestCheckIn = useCallback((contractId: string) => {
     if (!data) return;
     const c = data.contracts.find(x => x.id === contractId);
@@ -415,7 +413,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     void dbUpdateContractStatus(contractId, 'check_in_pending').catch(() => {});
   }, [data, setData]);
 
-  // 2. O Estabelecimento confirma a presença (Check-in duplo concluído)
   const confirmCheckIn = useCallback((contractId: string) => {
     if (!data) return;
     const c = data.contracts.find(x => x.id === contractId);
