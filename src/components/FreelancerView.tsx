@@ -53,7 +53,6 @@ export function FreelancerView() {
     return <VipPanel userId={me.id} accountType="freelancer" onBack={() => setTab('opportunities')} />;
   }
 
-  // 🛠️ ATUALIZADO: Inclui todos os status ativos para o contrato não sumir da tela do prestador
   const activeInvites = myContracts.filter((c) => ['requested', 'confirmed', 'paid', 'check_in_pending', 'checked_in'].includes(c.status));
 
   return (
@@ -167,7 +166,7 @@ export function FreelancerView() {
                 <MapPin className="h-4 w-4 shrink-0 text-neutral-400" />
                 <span className="text-xs font-semibold text-neutral-500">Raio de Atuação:</span>
                 <input type="range" min={1} max={100} step={1} disabled={me.unlimitedKm} value={radiusKm} onChange={(e) => setRadiusKm(Number(e.target.value))} className={`flex-1 accent-primary-500 ${me.unlimitedKm ? 'opacity-40' : ''}`} />
-                <span className="w-16 text-right text-xs font-bold text-neutral-700 dark:text-neutral-300">{me.unlimitedKm ? 'Ilistado' : `${radiusKm}km`}</span>
+                <span className="w-16 text-right text-xs font-bold text-neutral-700 dark:text-neutral-300">{me.unlimitedKm ? 'Ilimitado' : `${radiusKm}km`}</span>
               </div>
 
               {openJobs.length > 0 ? (
