@@ -926,11 +926,12 @@ export async function dbUpdatePaymentSettings(settings: PaymentSettings): Promis
 }
 
 export async function dbUpsertVipPlan(plan: any): Promise<void> {
-  await supabase.from('vip_plans_establishment').upsert(plan as never);
+  await supabase.from('vip_plans_freelancer').upsert(plan as never);
 }
 
 export async function dbDeleteVipPlan(tier: string): Promise<void> {
-  await supabase.from('vip_plans_freelancer').delete().eq('id', tier);
+  const numericId = freelancerTierToId(tier);
+  await supabase.from('vip_plans_freelancer').delete().eq('id', numericId);
 }
 
 export async function dbUpsertEstVipPlan(plan: any): Promise<void> {
@@ -938,7 +939,8 @@ export async function dbUpsertEstVipPlan(plan: any): Promise<void> {
 }
 
 export async function dbDeleteEstVipPlan(tier: string): Promise<void> {
-  await supabase.from('vip_plans_establishment').delete().eq('id', tier);
+  const numericId = establishmentTierToId(tier);
+  await supabase.from('vip_plans_establishment').delete().eq('id', numericId);
 }
 
 function mapDbContractToContract(row: DbContract, events: DbContractEvent[], reviews: DbContractReview[]): Contract {
