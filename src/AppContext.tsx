@@ -195,7 +195,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     void dbUpdateUser(id, { termsAcceptance: acceptance }).catch(() => {});
   }, [setData]);
 
-  const setAvailability = useCallback((userId: string, av: WeekAvailability) => updateUser(userId, { availability: av }), [updateUser]);
+  const setAvailability = useCallback((userId: string, av: WeekAvailability) => {
+    const user = data?.users.find((u) => u.id === userId);
+    updateUser(userId, { availability: av, dateAvailability: user?.dateAvailability ?? {} });
+  }, [data?.users, updateUser]);
   
   const toggleAvailabilitySlot = useCallback((userId: string, day: keyof WeekAvailability, shift: 'manha' | 'tarde' | 'noite') => {
     setData((d) => {
@@ -462,7 +465,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [data, setData]);
 
   const reviewsFor = useCallback((userId: string) => data?.reviews.filter((r) => r.toId === userId) ?? [], [data?.reviews]);
-  
+
   const setDefaultFeePercent = useCallback((n: number) => {
     setData((d) => ({ ...d, config: { ...d.config, defaultFeePercent: n } }));
     void dbUpdateDefaultFeePercent(n).catch(() => {});
@@ -485,7 +488,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [setData, data]);
 
   const coupons = useMemo(() => data?.coupons ?? [], [data?.coupons]);
-  
+
   const validateCoupon = useCallback((code: string) => {
     if (!data) return { error: 'Carregando.' };
     const c = data.coupons.find((cp) => cp.code.toUpperCase() === code.toUpperCase().trim() && cp.isActive);
@@ -537,7 +540,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setData((d) => ({ ...d, users: d.users.filter((u) => u.id !== id) }));
     void dbDeleteUser(id).catch(() => {});
   }, [setData]);
-  
+
   const adjustWallet = useCallback((userId: string, amount: number, description: string) => {
     if (!data) return;
     const tx: WalletTx = { 
