@@ -296,7 +296,6 @@ export function VipPanel({ userId, accountType, onBack }: { userId: string; acco
 
         const rawDocument = accountType === 'establishment' ? (currentUser?.cnpj || '') : (currentUser?.cpf || currentUser?.cpfCnpj || '');
         const cleanDocument = rawDocument.replace(/\D/g, '');
-        const validCpfCnpj = (cleanDocument.length === 11 || cleanDocument.length === 14) ? cleanDocument : '47690623000';
 
         const res = await fetch(`${supabaseUrl}/functions/v1/asaas-payment`, {
           method: 'POST',
@@ -311,7 +310,7 @@ export function VipPanel({ userId, accountType, onBack }: { userId: string; acco
             description: `Assinatura ${planObj.label} (${periodLabel(period)})`,
             customerName: currentUser?.name || 'Cliente',
             customerEmail: currentUser?.email || 'cliente@exemplo.com',
-            customerCpfCnpj: validCpfCnpj,
+            customerCpfCnpj: cleanDocument || undefined,
             externalReference: userId
           })
         });
@@ -325,22 +324,27 @@ export function VipPanel({ userId, accountType, onBack }: { userId: string; acco
         }
 
         if (!res.ok || responseData.error) {
-          throw new Error(responseData?.error || 'Erro ao comunicar com o gateway de pagamento.');
+          throw new Error(responseData?.error?.message || responseData?.error || 'Erro ao comunicar com o gateway de pagamento.');
         }
 
         if (billingType === 'PIX') {
-          if (!responseData.pixQrCode && !responseData.pixCopyPaste) {
+          const qrCodeBase64 = responseData.pixQrCode || responseData.pix?.encodedImage;
+          const payloadCopyPaste = responseData.pixCopyPaste || responseData.pix?.payload;
+
+          if (!qrCodeBase64 && !payloadCopyPaste) {
             throw new Error('A API não retornou os dados do QR Code Pix.');
           }
+
           setPixData({
-            qrCode: responseData.pixQrCode ? `data:image/png;base64,${responseData.pixQrCode}` : '',
-            payload: responseData.pixCopyPaste || ''
+            qrCode: qrCodeBase64 ? (qrCodeBase64.startsWith('data:') ? qrCodeBase64 : `data:image/png;base64,${qrCodeBase64}`) : '',
+            payload: payloadCopyPaste || ''
           });
           notify('Cobrança PIX gerada com sucesso! Escaneie o QR Code.');
         } else if (billingType === 'BOLETO' || billingType === 'CREDIT_CARD') {
           notify('Cobrança gerada com sucesso! Redirecionando...');
-          if (responseData.invoiceUrl) {
-            window.open(responseData.invoiceUrl, '_blank');
+          const redirectUrl = responseData.invoiceUrl || responseData.payment?.bankSlipUrl || responseData.payment?.invoiceUrl;
+          if (redirectUrl) {
+            window.open(redirectUrl, '_blank');
           }
         }
       } catch (err: any) {
@@ -605,7 +609,7 @@ export function VipPanel({ userId, accountType, onBack }: { userId: string; acco
                         {plan.tier === 'free' ? 'Voltar para Free' : 'Assinar Plano'}
                       </Button>
                     )}
-                    {active && <p className="text-center text-sm font-bold text-primary-400 py-3">You are on this plan</p>}
+                    {active && <p className="text-center text-sm font-bold text-primary-400 py-3">Você está neste plano</p>}
                   </div>
                 </div>
               );
@@ -624,6 +628,7 @@ export function VipPanel({ userId, accountType, onBack }: { userId: string; acco
               {estVipPlansList.map((plan) => {
                 const active = currentEstTier === plan.tier; 
                 const finalPlanPrice = calculateTotalPlanPrice(plan);
+                const feeDisplay = plan.feePercent ?? (plan as any).intermediationFee ?? 15;
                 return (
                   <div key={plan.tier} className={`relative flex flex-col justify-between rounded-2xl border-2 bg-neutral-900 p-6 transition shadow-xl ${estTierTone[plan.tier]} ${active ? 'ring-2 ring-primary-500 bg-neutral-900/90' : 'hover:border-neutral-700'}`}>
                     {active && <div className="absolute -top-3.5 left-5"><Badge tone="primary">Plano Ativo</Badge></div>}
@@ -633,8 +638,8 @@ export function VipPanel({ userId, accountType, onBack }: { userId: string; acco
                           <Store className={`h-5 w-5 ${getTierColor(plan.tier)}`} />
                           <span className="font-display text-base font-bold text-white">{plan.label}</span>
                         </div>
-                        <span className={`rounded-lg px-2.5 py-1 text-xs font-bold ${plan.intermediationFee === 0 ? 'bg-success-500/20 text-success-300 border border-success-500/30' : 'bg-warning-500/20 text-warning-300 border border-warning-500/30'}`}>
-                          {plan.intermediationFee === 0 ? '0% taxa' : `${plan.intermediationFee}% taxa`}
+                        <span className={`rounded-lg px-2.5 py-1 text-xs font-bold ${feeDisplay === 0 ? 'bg-success-500/20 text-success-300 border border-success-500/30' : 'bg-warning-500/20 text-warning-300 border border-warning-500/30'}`}>
+                          {feeDisplay === 0 ? '0% taxa' : `${feeDisplay}% taxa`}
                         </span>
                       </div>
 
@@ -739,7 +744,7 @@ export function VipPanel({ userId, accountType, onBack }: { userId: string; acco
 
         <Modal open={!!confirmEstTier} onClose={() => setConfirmEstTier(null)} title="Confirmar assinatura empresarial" size="sm"
           footer={<div className="flex gap-2"><Button variant="ghost" fullWidth onClick={() => setConfirmEstTier(null)}>Cancelar</Button><Button variant="warning" fullWidth onClick={() => confirmEstTier && handleProceedPayment(confirmEstTier, 'establishment')}><Check className="h-4 w-4" /> Confirmar</Button></div>}>
-          {confirmEstTier && <div className="space-y-3"><div className="flex items-center gap-3 rounded-xl bg-warning-50 p-3 dark:bg-warning-500/10"><Store className="h-8 w-8 text-warning-500" /><div><p className="font-bold text-neutral-900 dark:text-white">{getEstPlan(confirmEstTier, estVipPlansList).label} — {periodLabel(period)}</p><p className="text-xs text-neutral-400">Total: {formatCurrency(calculateTotalPlanPrice(getEstPlan(confirmEstTier, estVipPlansList)))} · Taxa: {getEstPlan(confirmEstTier, estVipPlansList).intermediationFee}%</p></div></div>
+          {confirmEstTier && <div className="space-y-3"><div className="flex items-center gap-3 rounded-xl bg-warning-50 p-3 dark:bg-warning-500/10"><Store className="h-8 w-8 text-warning-500" /><div><p className="font-bold text-neutral-900 dark:text-white">{getEstPlan(confirmEstTier, estVipPlansList).label} — {periodLabel(period)}</p><p className="text-xs text-neutral-400">Total: {formatCurrency(calculateTotalPlanPrice(getEstPlan(confirmEstTier, estVipPlansList)))} · Taxa: {getEstPlan(confirmEstTier, estVipPlansList).feePercent ?? (getEstPlan(confirmEstTier, estVipPlansList) as any).intermediationFee}%</p></div></div>
           <BillingTypeSelector billingType={billingType} setBillingType={setBillingType} paymentReady={paymentReady} providerLabel={providerInfo.label} />
           <p className="text-sm text-neutral-600 dark:text-neutral-300">{billingType === 'WALLET' ? 'Ao confirmar, o valor será debitado da sua carteira e sua nova taxa de intermediação será aplicada nas próximas contratações.' : `Ao confirmar, você será direcionado ao pagamento via ${providerInfo.label}.`}</p></div>}
         </Modal>
@@ -748,9 +753,11 @@ export function VipPanel({ userId, accountType, onBack }: { userId: string; acco
           {pixData && (
             <div className="space-y-4 text-center">
               <p className="text-sm text-neutral-600 dark:text-neutral-300">Escaneie o QR Code abaixo com o aplicativo do seu banco para realizar o pagamento:</p>
-              <div className="flex justify-center">
-                <img src={pixData.qrCode} alt="QR Code PIX" className="h-48 w-48 rounded-xl border border-neutral-200 p-2 dark:border-neutral-700" />
-              </div>
+              {pixData.qrCode && (
+                <div className="flex justify-center">
+                  <img src={pixData.qrCode} alt="QR Code PIX" className="h-48 w-48 rounded-xl border border-neutral-200 p-2 dark:border-neutral-700" />
+                </div>
+              )}
               <div>
                 <p className="mb-1 text-xs font-semibold text-neutral-500">Ou copie o código Pix Copia e Cola:</p>
                 <div className="flex items-center gap-2 rounded-xl border border-neutral-200 bg-neutral-50 p-2 dark:border-neutral-700 dark:bg-neutral-800">
