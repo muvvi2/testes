@@ -1,376 +1,746 @@
-import { useState } from 'react';
+import { useState, useEffect, useCallback, useMemo, type ReactNode } from 'react';
+import { AppContext, type AppContextValue, useApp } from './context';
+import { initialData, CATEGORIES, metroNearby, emptyAvailability } from './mockData';
+import { uid, getPlan, canSelectCategories, getEstPlan, getIntermediationFeePercent, calculateFees } from './utils';
+import { setPaymentSettings } from '@/services/paymentService';
+import { supabase } from '@/lib/supabase';
+import type { AppData, User, Job, Contract, WalletTx, AppNotification, Review, Tier, Period, WeekAvailability, DateAvailability, ContractStatus, EstTier, TermsAcceptance, Coupon, VipPlan, EstVipPlan, PaymentSettings } from './types';
 import {
-  Send, Check, Lock, Shield, Wallet, MapPin, MessageCircle, Star, Loader2,
-  ArrowRight, DollarSign, Phone, Download, Clock, Copy
-} from 'lucide-react';
-import { useApp } from '@/AppContext';
-import { useToast } from './ui/Toast';
-import { Modal } from './ui/Modal';
-import { Button } from './ui/Button';
-import { Badge } from './ui/Badge';
-import { Avatar } from './ui/Avatar';
-import { formatCurrency, formatDateBR, contractStatusLabel, contractStepIndex, CONTRACT_STATUS_FLOW, downloadTaxReceipt } from '@/utils';
-import { ReviewModal } from './ReviewModal';
-import type { Contract } from '@/types';
-import { paymentService } from '@/services/paymentService';
+  loadAllData, dbInsertUser, dbUpdateUser, dbDeleteUser,
+  dbInsertJob, dbUpdateJob, dbDeleteJob, dbApplyToJob,
+  dbInsertContract, dbUpdateContractStatus, dbUpdateContractInvoice,
+  dbInsertWalletTx, dbUpdateWalletBalance,
+  dbInsertNotification, dbMarkNotificationRead, dbMarkAllNotificationsRead,
+  dbInsertReview, dbDeleteReview,
+  dbInsertCoupon, dbToggleCoupon, dbDeleteCoupon,
+  dbInsertAuditLog, dbUpdateDefaultFeePercent, dbUpdatePaymentSettings,
+  dbUpsertVipPlan, dbDeleteVipPlan, dbUpsertEstVipPlan, dbDeleteEstVipPlan,
+  dbInsertAdmin
+} from '@/services/db';
 
-const STEP_ICONS = [Send, Check, Wallet, Clock, MapPin, DollarSign];
+export { useApp };
 
-export function EscrowFlowModal({ contract, open, onClose }: { contract: Contract; open: boolean; onClose: () => void }) {
-  const { currentUser, data, confirmAvailability, payEscrow, requestCheckIn, confirmCheckIn, finishService, cancelContract } = useApp();
-  const { notify } = useToast();
-  const [processing, setProcessing] = useState(false);
-  const [reviewOpen, setReviewOpen] = useState(false);
-  const [payMethod, setPayMethod] = useState<'wallet' | 'pix' | 'card'>('wallet');
-  const [paymentStage, setPaymentStage] = useState<'select' | 'pix' | 'card'>('select');
-  const [pixQrCode, setPixQrCode] = useState<string | null>(null);
-  const [pixPayload, setPixPayload] = useState<string | null>(null);
-  const [checkoutUrl, setCheckoutUrl] = useState<string | null>(null);
+const ADMIN_ID = '00000000-0000-0000-0000-000000000001';
+const STORAGE_KEY = 'freelaagora_current_user';
 
-  if (!currentUser) return null;
-  const isFreelancer = currentUser.id === contract.freelancerId;
-  const isEstablishment = currentUser.id === contract.establishmentId;
-  const stepIdx = contractStepIndex(contract.status);
-  const contactUnlocked = contract.status === 'paid' || contract.status === 'check_in_pending' || contract.status === 'checked_in' || contract.status === 'completed';
-  const canReview = contract.status === 'completed';
-
-  const estUser = data?.users.find(u => u.id === contract.establishmentId);
-  const balance = estUser?.walletBalance ?? 0;
-  const hasEnoughBalance = balance >= contract.total;
-
-  const handlePay = async () => {
-    if (payMethod === 'wallet') {
-      if (!hasEnoughBalance) {
-        notify('Saldo insuficiente na carteira. Escolha PIX ou Cartão de Crédito.', 'error');
-        return;
-      }
-      setProcessing(true);
-      const res = payEscrow(contract.id, 'wallet');
-      setProcessing(false);
-      if (!res.ok) {
-        notify(res.error || 'Erro ao processar pagamento.', 'error');
-      } else {
-        notify('Pagamento em garantia realizado! Contato do freelancer liberado.');
-      }
-      return;
-    }
-
-    setProcessing(true);
+export function AppProvider({ children }: { children: ReactNode }) {
+  const [data, setDataState] = useState<AppData>(() => {
     try {
-      const rawDocument = estUser?.cnpj || estUser?.cpf || estUser?.cpfCnpj || '';
-      const cleanDocument = rawDocument.replace(/\D/g, '');
-
-      const result: any = await paymentService.createPaymentWithSplit({
-        customer: contract.establishmentId,
-        customerName: estUser?.name || contract.establishmentName || 'Cliente',
-        customerEmail: estUser?.email || 'cliente@freelaagora.com',
-        customerCpfCnpj: cleanDocument || undefined,
-        billingType: payMethod === 'pix' ? 'PIX' : 'CREDIT_CARD',
-        value: contract.total,
-        dueDate: new Date().toISOString().slice(0, 10),
-        description: `Escrow — ${contract.freelancerName}`,
-        splits: [],
-        externalReference: contract.id,
-      });
-
-      if (payMethod === 'pix') {
-        const qrCodeBase64 = result.pixQrCode || result.encodedImage || result.pix?.encodedImage || result.pixQrCodeUrl;
-        const copyPaste = result.pixCopyPaste || result.payload || result.pix?.payload;
-
-        if (!qrCodeBase64 && !copyPaste) {
-          throw new Error('O gateway não retornou um QR Code PIX.');
-        }
-
-        const formattedQrCode = qrCodeBase64 
-          ? (qrCodeBase64.startsWith('data:') || qrCodeBase64.startsWith('http') ? qrCodeBase64 : `data:image/png;base64,${qrCodeBase64}`)
-          : null;
-
-        setPixQrCode(formattedQrCode);
-        setPixPayload(copyPaste || formattedQrCode);
-        setPaymentStage('pix');
-        notify('QR Code PIX gerado. O contrato será liberado após a confirmação do pagamento.');
-      } else {
-        const redirectUrl = result.invoiceUrl || result.bankSlipUrl || result.paymentUrl;
-        if (!redirectUrl) throw new Error('O gateway não retornou um checkout para cartão.');
-        setCheckoutUrl(redirectUrl);
-        setPaymentStage('card');
-        notify('Checkout seguro criado. Conclua o pagamento na nova página.');
+      const savedUserId = localStorage.getItem(STORAGE_KEY);
+      if (savedUserId) {
+        return { ...initialData, currentUserId: savedUserId };
       }
-    } catch (err: any) {
-      console.error("Erro no pagamento:", err);
-      notify(err.message || 'Não foi possível iniciar este pagamento. O provedor de pagamentos ainda não está disponível.', 'error');
-    } finally {
-      setProcessing(false);
+    } catch (e) {}
+    return initialData;
+  });
+
+  const [loaded, setLoaded] = useState(false);
+  const [adminTab, setAdminTab] = useState('overview');
+  const [adminMode, setAdminMode] = useState(true);
+
+  // 1. Carregamento Inicial do Banco
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const dbData = await loadAllData();
+        if (!cancelled && dbData) {
+          setDataState((prev) => ({ ...dbData, currentUserId: prev.currentUserId ?? dbData.currentUserId }));
+        }
+      } catch (e) { 
+        console.warn("⚠️ Falha ao carregar do Supabase:", e); 
+      } opacity: { if (!cancelled) setLoaded(true); }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // 2. Realtime Listener para Atualização Instantânea (Sem F5)
+  useEffect(() => {
+    const channel = supabase
+      .channel('realtime-app-updates')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'contracts' },
+        (payload) => {
+          if (payload.eventType === 'INSERT') {
+            const newContract = payload.new as Contract;
+            setDataState((prev) => {
+              if (prev.contracts.some((c) => c.id === newContract.id)) return prev;
+              return { ...prev, contracts: [newContract, ...prev.contracts] };
+            });
+          } else if (payload.eventType === 'UPDATE') {
+            const updatedContract = payload.new as Contract;
+            setDataState((prev) => ({
+              ...prev,
+              contracts: prev.contracts.map((c) => (c.id === updatedContract.id ? { ...c, ...updatedContract } : c)),
+            }));
+          } else if (payload.eventType === 'DELETE') {
+            const deletedId = payload.old.id;
+            setDataState((prev) => ({
+              ...prev,
+              contracts: prev.contracts.filter((c) => c.id !== deletedId),
+            }));
+          }
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'notifications' },
+        (payload) => {
+          if (payload.eventType === 'INSERT') {
+            const newNotif = payload.new as AppNotification;
+            setDataState((prev) => {
+              if (prev.notifications.some((n) => n.id === newNotif.id)) return prev;
+              return { ...prev, notifications: [newNotif, ...prev.notifications] };
+            });
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (data?.paymentSettings) {
+      setPaymentSettings(data.paymentSettings ?? { activeProvider: 'asaas', configs: {} });
     }
-  };
+  }, [data?.paymentSettings]);
 
-  const handleFinish = () => {
-    setProcessing(true);
-    setTimeout(() => { finishService(contract.id); setProcessing(false); notify('Serviço concluído! Repasse realizado via split payment.'); }, 1400);
-  };
+  const setData = useCallback((updater: AppData | ((prev: AppData) => AppData)) => {
+    setDataState((prev) => {
+      const next = typeof updater === 'function' ? (updater as (p: AppData) => AppData)(prev) : updater;
+      try {
+        if (next.currentUserId) localStorage.setItem(STORAGE_KEY, next.currentUserId);
+        else localStorage.removeItem(STORAGE_KEY);
+      } catch (e) {}
+      return next;
+    });
+  }, []);
 
-  return (
-    <>
-      <Modal open={open} onClose={onClose} title="Contratação com Garantia" subtitle={`Contrato ${contract.id.slice(0, 12)}`} size="lg">
-        {/* Parties */}
-        <div className="flex items-center justify-center gap-4 rounded-xl bg-neutral-50 p-4 dark:bg-neutral-800">
-          <div className="flex flex-col items-center gap-1.5">
-            <Avatar src={contract.freelancerPhoto} alt={contract.freelancerName} size={48} ring={contactUnlocked ? 'primary' : 'neutral'} />
-            <p className="max-w-[100px] truncate text-xs font-semibold text-neutral-700 dark:text-neutral-300">{contract.freelancerName}</p>
-            <Badge tone="secondary">Freelancer</Badge>
-          </div>
-          <ArrowRight className="h-5 w-5 text-neutral-400" />
-          <div className="flex flex-col items-center gap-1.5">
-            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary-100 dark:bg-primary-500/15"><Shield className="h-6 w-6 text-primary-500" /></div>
-            <p className="text-xs font-semibold text-neutral-700 dark:text-neutral-300">Garantia Escrow</p>
-            <Badge tone="warning">{formatCurrency(contract.total)}</Badge>
-          </div>
-          <ArrowRight className="h-5 w-5 text-neutral-400" />
-          <div className="flex flex-col items-center gap-1.5">
-            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-secondary-100 dark:bg-secondary-500/15"><Wallet className="h-6 w-6 text-secondary-500" /></div>
-            <p className="max-w-[100px] truncate text-xs font-semibold text-neutral-700 dark:text-neutral-300">{contract.establishmentName}</p>
-            <Badge tone="primary">Contratante</Badge>
-          </div>
-        </div>
+  const resetData = useCallback(() => {
+    try { localStorage.removeItem(STORAGE_KEY); } catch (e) {}
+    setDataState(initialData);
+  }, []);
 
-        {/* Stepper */}
-        <div className="mt-5">
-          <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-neutral-400">Progresso</p>
-          <div className="flex items-center justify-between">
-            {CONTRACT_STATUS_FLOW.map((s, i) => {
-              const Icon = STEP_ICONS[i] ?? Check;
-              const done = i <= stepIdx && contract.status !== 'cancelled';
-              const isCurrent = i === stepIdx && contract.status !== 'completed' && contract.status !== 'cancelled';
-              return (
-                <div key={s} className="flex flex-1 flex-col items-center gap-1.5">
-                  <div className={`flex h-9 w-9 items-center justify-center rounded-full border-2 transition ${done ? 'border-success-500 bg-success-500 text-white' : isCurrent ? 'border-primary-500 bg-primary-50 text-primary-500 dark:bg-primary-500/15' : 'border-neutral-200 bg-neutral-50 text-neutral-300 dark:border-neutral-700 dark:bg-neutral-800'}`}>
-                    <Icon className="h-4 w-4" />
-                  </div>
-                  <span className={`text-center text-[10px] leading-tight ${done ? 'font-semibold text-neutral-700 dark:text-neutral-200' : 'text-neutral-400'}`}>{contractStatusLabel(s).split(' ').slice(0, 2).join(' ')}</span>
-                  {i < CONTRACT_STATUS_FLOW.length - 1 && <div className={`hidden h-0.5 w-full sm:block ${i < stepIdx ? 'bg-success-500' : 'bg-neutral-200 dark:bg-neutral-700'}`} />}
-                </div>
-              );
-            })}
-          </div>
-        </div>
+  const currentUser = useMemo(() => data?.users.find((u) => u.id === data.currentUserId) ?? null, [data?.users, data?.currentUserId]);
+  const isAdmin = !!currentUser?.isAdmin;
+  const isSuperAdmin = !!currentUser?.isAdmin && currentUser?.adminRole === 'super';
+  const currentAdminId = currentUser?.id ?? ADMIN_ID;
 
-        {/* Cost breakdown */}
-        <div className="mt-5 space-y-2 rounded-xl border border-neutral-200 p-4 dark:border-neutral-700">
-          <Row label="Valor do freela" value={formatCurrency(contract.freelancerFee)} />
-          <Row label={`Taxa de intermediação (${contract.platformFeePercentage}%)`} value={contract.platformFee === 0 ? 'Isento' : formatCurrency(contract.platformFee)} />
-          <div className="border-t border-dashed border-neutral-200 pt-2 dark:border-neutral-700">
-            <Row label="Total pago em garantia" value={formatCurrency(contract.total)} bold />
-          </div>
-        </div>
+  const login = useCallback((email: string, password: string): { ok: boolean; error?: string } => {
+    if (!data) return { ok: false, error: 'Sistema ainda carregando.' };
+    const user = data.users.find((u) => u.email.toLowerCase() === email.toLowerCase().trim());
+    if (!user) return { ok: false, error: 'E-mail não cadastrado.' };
+    if (user.password !== password) return { ok: false, error: 'Senha incorreta.' };
+    if (user.banned) return { ok: false, error: 'Esta conta foi banida.' };
+    setData((d) => ({ ...d, currentUserId: user.id }));
+    return { ok: true };
+  }, [data?.users, setData]);
 
-        {/* Contact unlock */}
-        {isEstablishment && contactUnlocked && (
-          <div className="mt-4 rounded-xl border border-success-200 bg-success-50 p-4 dark:border-success-500/30 dark:bg-success-500/10">
-            <div className="flex items-center gap-2">
-              <MessageCircle className="h-5 w-5 text-success-600 dark:text-success-400" />
-              <p className="font-semibold text-success-800 dark:text-success-300">Contato do freelancer liberado!</p>
-            </div>
-            <p className="mt-1 text-sm text-success-700 dark:text-success-400">O pagamento em garantia desbloqueou o WhatsApp e telefone do profissional. Combine os detalhes do serviço diretamente.</p>
-            <div className="mt-3 flex gap-2">
-              <a href={`https://wa.me/55${contract.freelancerWhatsapp?.replace(/\D/g, '')}`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 rounded-lg bg-success-500 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-success-600">
-                <MessageCircle className="h-4 w-4" /> Abrir WhatsApp
-              </a>
-              <span className="inline-flex items-center gap-1.5 rounded-lg border border-success-300 px-3 py-1.5 text-xs font-semibold text-success-700 dark:border-success-500/30 dark:text-success-400">
-                <Phone className="h-4 w-4" /> {contract.freelancerPhone}
-              </span>
-            </div>
-          </div>
-        )}
+  const register = useCallback((user: Omit<User, 'id' | 'createdAt' | 'walletBalance' | 'rating' | 'reviewsCount' | 'completedShifts'> & Partial<User>): { ok: boolean; error?: string } => {
+    if (!data) return { ok: false, error: 'Sistema ainda carregando.' };
+    if (data.users.some((u) => u.email.toLowerCase() === user.email.toLowerCase().trim())) {
+      return { ok: false, error: 'Este e-mail já está cadastrado.' };
+    }
+    const id = crypto.randomUUID();
+    const newUser: User = {
+      ...user, id, email: user.email.toLowerCase().trim(), createdAt: new Date().toISOString(),
+      walletBalance: 0, rating: user.accountType === 'freelancer' ? 5 : 0, reviewsCount: 0, completedShifts: 0,
+      vipTier: user.accountType === 'freelancer' ? 'free' : undefined,
+      estVipTier: user.accountType === 'establishment' ? 'trial' : undefined,
+      trialEndsAt: user.accountType === 'establishment' ? new Date(Date.now() + 15 * 86400000).toISOString() : undefined,
+      categories: user.accountType === 'freelancer' ? (user.categories ?? []) : undefined,
+      availability: user.accountType === 'freelancer' ? (user.availability ?? emptyAvailability()) : undefined,
+    } as User;
+    setData((d) => ({ ...d, users: [...d.users, newUser], currentUserId: id }));
+    void dbInsertUser(newUser).catch(() => {});
+    return { ok: true };
+  }, [data, setData]);
 
-        {isEstablishment && !contactUnlocked && contract.status !== 'cancelled' && (
-          <div className="mt-4 flex items-start gap-3 rounded-xl border border-neutral-200 bg-neutral-50 p-4 dark:border-neutral-800 dark:bg-neutral-800">
-            <Lock className="mt-0.5 h-5 w-5 shrink-0 text-neutral-400" />
-            <p className="text-sm text-neutral-500 dark:text-neutral-400">O contato do freelancer (WhatsApp e telefone) será liberado após o pagamento em garantia.</p>
-          </div>
-        )}
+  const logout = useCallback(() => {
+    try { localStorage.removeItem(STORAGE_KEY); } catch (e) {}
+    setData((d) => ({ ...d, currentUserId: null }));
+  }, [setData]);
 
-        {/* Action area */}
-        <div className="mt-5">
-          {contract.status === 'cancelled' && (
-            <div className="rounded-xl border border-error-200 bg-error-50 p-4 text-center dark:border-error-500/30 dark:bg-error-500/10">
-              <p className="font-semibold text-error-700 dark:text-error-400">Contrato cancelado</p>
-            </div>
-          )}
+  const updateUser = useCallback((id: string, patch: Partial<User>) => {
+    setData((d) => ({ ...d, users: d.users.map((u) => (u.id === id ? { ...u, ...patch } : u)) }));
+    void dbUpdateUser(id, patch).catch(() => {});
+  }, [setData]);
 
-          {isFreelancer && contract.status === 'requested' && (
-            <Button fullWidth size="lg" variant="secondary" onClick={() => { confirmAvailability(contract.id); notify('Disponibilidade confirmada! Aguardando pagamento.'); }}>
-              <Check className="h-5 w-5" /> Confirmar Disponibilidade
-            </Button>
-          )}
+  const adminUpdateUser = useCallback((id: string, patch: Partial<User>) => {
+    const stampedPatch = { ...patch, lastAdminEdit: new Date().toISOString() };
+    const auditLog = { id: crypto.randomUUID(), adminId: currentAdminId, action: `Admin alterou dados do usuário ${id}`, targetUserId: id, createdAt: new Date().toISOString() };
+    setData((d) => ({
+      ...d,
+      users: d.users.map((u) => (u.id === id ? { ...u, ...stampedPatch } : u)),
+      adminAuditLogs: [auditLog, ...d.adminAuditLogs]
+    }));
+    void dbUpdateUser(id, stampedPatch).catch(() => {});
+    void dbInsertAuditLog(auditLog).catch(() => {});
+  }, [setData, currentAdminId]);
 
-          {/* Opções de Pagamento para o Estabelecimento */}
-          {isEstablishment && contract.status === 'confirmed' && (
-            <div className="space-y-4 rounded-xl border border-neutral-200 p-4 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800/50">
-              <p className="text-xs font-semibold uppercase tracking-wider text-neutral-500">Escolha a Forma de Pagamento</p>
-              
-              <div className="grid grid-cols-3 gap-2">
-                <button 
-                  type="button"
-                  onClick={() => setPayMethod('wallet')}
-                  className={`flex flex-col items-center justify-center p-3 rounded-xl border text-xs font-semibold transition ${payMethod === 'wallet' ? 'border-primary-500 bg-primary-50 text-primary-700 dark:bg-primary-500/15 dark:text-primary-300' : 'border-neutral-200 bg-white text-neutral-600 dark:bg-neutral-800 dark:border-neutral-700 dark:text-neutral-300'}`}
-                >
-                  <Wallet className="h-4 w-4 mb-1 text-primary-500" />
-                  Carteira
-                  <span className="text-[10px] text-neutral-400 font-normal mt-0.5">{formatCurrency(balance)}</span>
-                </button>
+  const deleteEntity = useCallback((id: string) => {
+    setData((d) => ({ ...d, users: d.users.filter((u) => u.id !== id) }));
+    void dbDeleteUser(id).catch(() => {});
+  }, [setData]);
 
-                <button 
-                  type="button"
-                  onClick={() => setPayMethod('pix')}
-                  className={`flex flex-col items-center justify-center p-3 rounded-xl border text-xs font-semibold transition ${payMethod === 'pix' ? 'border-primary-500 bg-primary-50 text-primary-700 dark:bg-primary-500/15 dark:text-primary-300' : 'border-neutral-200 bg-white text-neutral-600 dark:bg-neutral-800 dark:border-neutral-700 dark:text-neutral-300'}`}
-                >
-                  <DollarSign className="h-4 w-4 mb-1 text-success-500" />
-                  PIX Instantâneo
-                </button>
+  const banUser = useCallback((id: string) => {
+    setData((d) => ({ ...d, users: d.users.map((u) => (u.id === id ? { ...u, banned: true } : u)) }));
+    void dbUpdateUser(id, { banned: true }).catch(() => {});
+  }, [setData]);
 
-                <button 
-                  type="button"
-                  onClick={() => setPayMethod('card')}
-                  className={`flex flex-col items-center justify-center p-3 rounded-xl border text-xs font-semibold transition ${payMethod === 'card' ? 'border-primary-500 bg-primary-50 text-primary-700 dark:bg-primary-500/15 dark:text-primary-300' : 'border-neutral-200 bg-white text-neutral-600 dark:bg-neutral-800 dark:border-neutral-700 dark:text-neutral-300'}`}
-                >
-                  <Shield className="h-4 w-4 mb-1 text-secondary-500" />
-                  Cartão de Crédito
-                </button>
-              </div>
+  const unbanUser = useCallback((id: string) => {
+    setData((d) => ({ ...d, users: d.users.map((u) => (u.id === id ? { ...u, banned: false } : u)) }));
+    void dbUpdateUser(id, { banned: false }).catch(() => {});
+  }, [setData]);
 
-              {payMethod === 'wallet' && !hasEnoughBalance && (
-                <p className="text-[11px] text-error-500 font-medium">⚠️ Saldo em carteira insuficiente. Selecione PIX ou Cartão para prosseguir.</p>
-              )}
+  const setVipTier = useCallback((id: string, tier: Tier, period: Period = 'monthly'): { ok: boolean; error?: string } => {
+    if (!data) return { ok: false, error: 'Sistema carregando.' };
+    const user = data.users.find(u => u.id === id);
+    const price = getPlan(tier, data.vipPlans).prices[period];
+    if (tier !== 'free' && price > 0 && (user?.walletBalance ?? 0) < price) {
+      return { ok: false, error: 'Saldo insuficiente na carteira.' };
+    }
+    const expiry = tier === 'free' ? undefined : new Date(Date.now() + (period === 'annual' ? 365 : period === 'semestral' ? 180 : 30) * 86400000).toISOString();
+    const newTxs: WalletTx[] = price > 0 ? [{ id: crypto.randomUUID(), userId: id, type: 'vip_charge', amount: -price, description: `Assinatura ${getPlan(tier, data.vipPlans).label} (${period})`, date: new Date().toISOString() }] : [];
+    setData((d) => ({
+      ...d,
+      users: d.users.map((u) => (u.id === id ? { ...u, vipTier: tier, vipExpiresAt: expiry, walletBalance: Math.max(0, (u.walletBalance ?? 0) - price) } : u)),
+      walletTxs: [...newTxs, ...d.walletTxs]
+    }));
+    void dbUpdateUser(id, { vipTier: tier, vipExpiresAt: expiry }).catch(() => {});
+    if (price > 0 && newTxs[0]) {
+      void dbInsertWalletTx(newTxs[0]).catch(() => {});
+      if (user) void dbUpdateWalletBalance(id, Math.max(0, (user.walletBalance ?? 0) - price)).catch(() => {});
+    }
+    return { ok: true };
+  }, [setData, data]);
 
-              {processing && (
-                <div className="flex items-center gap-2 p-2 rounded-lg bg-primary-50 text-primary-700 dark:bg-primary-500/10 dark:text-primary-300 text-xs">
-                  <Loader2 className="h-4 w-4 animate-spin text-primary-500" />
-                  Processando pagamento ({payMethod.toUpperCase()})...
-                </div>
-              )}
+  const setEstVipTier = useCallback((id: string, tier: EstTier, period: Period = 'monthly'): { ok: boolean; error?: string } => {
+    if (!data) return { ok: false, error: 'Sistema carregando.' };
+    const user = data.users.find(u => u.id === id);
+    const price = getEstPlan(tier, data.estVipPlans).prices[period];
+    if (tier !== 'free' && tier !== 'trial' && price > 0 && (user?.walletBalance ?? 0) < price) {
+      return { ok: false, error: 'Saldo insuficiente na carteira.' };
+    }
+    const expiry = (tier === 'free' || tier === 'trial') ? undefined : new Date(Date.now() + (period === 'annual' ? 365 : period === 'semestral' ? 180 : 30) * 86400000).toISOString();
+    const newTrialEndsAt = (tier !== 'free' && tier !== 'trial') ? null : user?.trialEndsAt;
+    const newTxs: WalletTx[] = price > 0 ? [{ id: crypto.randomUUID(), userId: id, type: 'vip_charge_est', amount: -price, description: `Assinatura ${getEstPlan(tier, data.estVipPlans).label} (${period})`, date: new Date().toISOString() }] : [];
+    setData((d) => ({
+      ...d,
+      users: d.users.map((u) => (u.id === id ? { ...u, estVipTier: tier, estVipExpiresAt: expiry, trialEndsAt: newTrialEndsAt, walletBalance: Math.max(0, (u.walletBalance ?? 0) - price) } : u)),
+      walletTxs: [...newTxs, ...d.walletTxs]
+    }));
+    void dbUpdateUser(id, { estVipTier: tier, estVipExpiresAt: expiry, trialEndsAt: newTrialEndsAt }).catch(() => {});
+    if (price > 0 && newTxs[0]) {
+      void dbInsertWalletTx(newTxs[0]).catch(() => {});
+      if (user) void dbUpdateWalletBalance(id, Math.max(0, (user.walletBalance ?? 0) - price)).catch(() => {});
+    }
+    return { ok: true };
+  }, [setData, data]);
 
-              <Button fullWidth size="lg" onClick={handlePay} disabled={processing || (payMethod === 'wallet' && !hasEnoughBalance)}>
-                {processing ? <><Loader2 className="h-5 w-5 animate-spin" /> Processando...</> : <><Lock className="h-5 w-5" /> {payMethod === 'wallet' ? `Pagar ${formatCurrency(contract.total)} em Garantia` : `Gerar pagamento de ${formatCurrency(contract.total)}`}</>}
-              </Button>
+  const setTermsAcceptance = useCallback((id: string, acceptance: TermsAcceptance) => {
+    setData((d) => ({ ...d, users: d.users.map((u) => (u.id === id ? { ...u, termsAcceptance: acceptance } : u)) }));
+    void dbUpdateUser(id, { termsAcceptance: acceptance }).catch(() => {});
+  }, [setData]);
 
-              {paymentStage === 'pix' && (pixQrCode || pixPayload) && (
-                <div className="space-y-3 rounded-xl border border-success-200 bg-success-50 p-4 dark:border-success-500/30 dark:bg-success-500/10">
-                  <div>
-                    <p className="font-semibold text-success-800 dark:text-success-300">PIX aguardando pagamento</p>
-                    <p className="mt-1 text-xs text-success-700 dark:text-success-400">Escaneie o QR Code ou copie o código. O contato só será liberado após a confirmação.</p>
-                  </div>
-                  {pixQrCode ? (
-                    <img src={pixQrCode} alt="QR Code PIX" className="mx-auto h-48 w-48 rounded-lg bg-white p-2 border border-neutral-200" />
-                  ) : (
-                    <div className="rounded-lg border border-dashed border-success-300 bg-white p-3 text-center text-xs text-neutral-600">O provedor retornou o código PIX. Copie o código abaixo para pagar.</div>
-                  )}
-                  {pixPayload && (
-                    <div className="flex gap-2">
-                      <input readOnly value={pixPayload} className="min-w-0 flex-1 rounded-lg border border-success-200 bg-white px-3 py-2 text-xs text-neutral-700" aria-label="Código PIX" />
-                      <Button size="sm" variant="outline" onClick={() => { if (pixPayload) void navigator.clipboard.writeText(pixPayload); notify('Código PIX copiado.'); }}>
-                        <Copy className="h-3.5 w-3.5 mr-1" /> Copiar
-                      </Button>
-                    </div>
-                  )}
-                </div>
-              )}
+  const setAvailability = useCallback((userId: string, av: WeekAvailability) => {
+    const user = data?.users.find((u) => u.id === userId);
+    updateUser(userId, { availability: av, dateAvailability: user?.dateAvailability ?? {} });
+  }, [data?.users, updateUser]);
+  
+  const toggleAvailabilitySlot = useCallback((userId: string, day: keyof WeekAvailability, shift: 'manha' | 'tarde' | 'noite') => {
+    setData((d) => {
+      const users = d.users.map((u) => {
+        if (u.id !== userId) return u;
+        const av = u.availability ?? emptyAvailability();
+        const updated = { ...av, [day]: { ...av[day], [shift]: !av[day][shift] } };
+        return { ...u, availability: updated };
+      });
+      const user = users.find((u) => u.id === userId);
+      if (user?.availability) void dbUpdateUser(userId, { availability: user.availability, dateAvailability: user.dateAvailability ?? {} }).catch(() => {});
+      return { ...d, users };
+    });
+  }, [setData]);
 
-              {paymentStage === 'card' && checkoutUrl && (
-                <div className="space-y-3 rounded-xl border border-secondary-200 bg-secondary-50 p-4 dark:border-secondary-500/30 dark:bg-secondary-500/10">
-                  <p className="font-semibold text-secondary-800 dark:text-secondary-300">Checkout seguro do cartão</p>
-                  <p className="text-xs text-secondary-700 dark:text-secondary-400">Os dados do cartão serão preenchidos diretamente no provedor. Este contrato continua aguardando até o pagamento ser confirmado.</p>
-                  <a href={checkoutUrl} target="_blank" rel="noreferrer" className="inline-flex w-full items-center justify-center rounded-lg bg-secondary-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-secondary-700">Abrir checkout do cartão</a>
-                </div>
-              )}
-            </div>
-          )}
+  const toggleDateShift = useCallback((userId: string, dateKey: string, shift: 'manha' | 'tarde' | 'noite') => {
+    setData((d) => {
+      const users = d.users.map((u) => {
+        if (u.id !== userId) return u;
+        const da = { ...(u.dateAvailability ?? {}) } as DateAvailability;
+        const day = { ...(da[dateKey] ?? { manha: false, tarde: false, noite: false }) };
+        day[shift] = !day[shift];
+        if (!day.manha && !day.tarde && !day.noite) { delete da[dateKey]; } else { da[dateKey] = day; }
+        return { ...u, dateAvailability: da };
+      });
+      const user = users.find((u) => u.id === userId);
+      if (user) {
+        void dbUpdateUser(userId, { availability: user.availability ?? emptyAvailability(), dateAvailability: user.dateAvailability ?? {} }).catch((err) => {
+          console.error("Erro ao salvar agenda no banco:", err);
+        });
+      }
+      return { ...d, users };
+    });
+  }, [setData]);
 
-          {/* CHECK-IN DUPLO: Solicitação do Freelancer */}
-          {isFreelancer && contract.status === 'paid' && (
-            <Button fullWidth size="lg" variant="secondary" onClick={() => { requestCheckIn(contract.id); notify('Check-in registrado! Aguardando confirmação do estabelecimento.'); }}>
-              <MapPin className="h-5 w-5" /> Registrar Chegada (Fazer Check-in)
-            </Button>
-          )}
+  const toggleCategory = useCallback((userId: string, categoryId: string): { ok: boolean; error?: string } => {
+    if (!data) return { ok: false, error: 'Sistema carregando.' };
+    const user = data.users.find((u) => u.id === userId);
+    if (!user) return { ok: false, error: 'Usuário não encontrado.' };
+    const current = user.categories ?? [];
+    const tier = user.vipTier ?? 'free';
+    if (current.includes(categoryId)) {
+      updateUser(userId, { categories: current.filter((c) => c !== categoryId) });
+      return { ok: true };
+    }
+    if (!canSelectCategories(tier, current.length, data.vipPlans)) {
+      const plan = getPlan(tier, data.vipPlans);
+      return { ok: false, error: `Seu plano ${plan.label} permite até ${plan.maxCategories} categorias.` };
+    }
+    updateUser(userId, { categories: [...current, categoryId] });
+    return { ok: true };
+  }, [data, updateUser]);
 
-          {isFreelancer && contract.status === 'check_in_pending' && (
-            <div className="rounded-xl border border-warning-200 bg-warning-50 p-3 text-center dark:border-warning-500/30 dark:bg-warning-500/10">
-              <p className="text-xs font-semibold text-warning-700 dark:text-warning-300">⏳ Check-in enviado. Aguardando o estabelecimento confirmar sua presença no local.</p>
-            </div>
-          )}
+  const addJob = useCallback((j: Job): { ok: boolean; error?: string } => {
+    if (!data) return { ok: false, error: 'Sistema carregando.' };
+    const est = data.users.find((u) => u.id === j.establishmentId);
+    if (!est) return { ok: false, error: 'Estabelecimento não encontrado.' };
+    setData((d) => ({ ...d, jobs: [j, ...d.jobs] }));
+    void dbInsertJob(j).catch(() => {});
+    return { ok: true };
+  }, [data, setData]);
 
-          {/* CHECK-IN DUPLO: Confirmação do Estabelecimento */}
-          {isEstablishment && contract.status === 'check_in_pending' && (
-            <div className="space-y-2">
-              <div className="rounded-xl border border-warning-200 bg-warning-50 p-3 text-center dark:border-warning-500/30 dark:bg-warning-500/10">
-                <p className="text-xs font-semibold text-warning-700 dark:text-warning-300">🔔 O profissional registrou chegada! Confirme a presença para iniciar o turno.</p>
-              </div>
-              <Button fullWidth size="lg" variant="primary" onClick={() => { confirmCheckIn(contract.id); notify('Presença do profissional confirmada com sucesso!'); }}>
-                <Check className="h-5 w-5" /> Confirmar Presença do Profissional
-              </Button>
-            </div>
-          )}
+  const updateJob = useCallback((id: string, patch: Partial<Job>) => {
+    setData((d) => ({ ...d, jobs: d.jobs.map((j) => (j.id === id ? { ...j, ...patch } : j)) }));
+    void dbUpdateJob(id, patch).catch(() => {});
+  }, [setData]);
 
-          {isFreelancer && contract.status === 'checked_in' && (
-            <Button fullWidth size="lg" variant="secondary" onClick={handleFinish} disabled={processing}>
-              {processing ? <><Loader2 className="h-5 w-5 animate-spin" /> Processando repasse...</> : <><Check className="h-5 w-5" /> Finalizar Serviço (Check-out)</>}
-            </Button>
-          )}
+  const deleteJob = useCallback((id: string) => {
+    setData((d) => ({ ...d, jobs: d.jobs.filter((j) => j.id !== id) }));
+    void dbDeleteJob(id).catch(() => {});
+  }, [setData]);
 
-          {canReview && (
-            <Button fullWidth size="lg" variant="primary" onClick={() => setReviewOpen(true)}>
-              <Star className="h-5 w-5" /> Avaliar {isFreelancer ? 'estabelecimento' : 'freelancer'}
-            </Button>
-          )}
+  const pauseJob = useCallback((id: string) => {
+    if (!data) return;
+    const job = data.jobs.find((j) => j.id === id);
+    const newStatus = job?.status === 'paused' ? 'active' : 'paused';
+    setData((d) => ({ ...d, jobs: d.jobs.map((j) => (j.id === id ? { ...j, status: newStatus } : j)) }));
+    void dbUpdateJob(id, { status: newStatus }).catch(() => {});
+  }, [setData, data]);
 
-          {contract.status !== 'completed' && contract.status !== 'cancelled' && (
-            <button onClick={() => { cancelContract(contract.id); notify('Contrato cancelado', 'warning'); }} className="mt-3 w-full text-center text-xs font-semibold text-error-500 hover:underline">
-              Cancelar contratação
-            </button>
-          )}
-        </div>
+  const applyToJob = useCallback((jobId: string, freelancerId: string) => {
+    setData((d) => ({ ...d, jobs: d.jobs.map((j) => (j.id === jobId && !j.applicants.includes(freelancerId) ? { ...j, applicants: [...j.applicants, freelancerId] } : j)) }));
+    void dbApplyToJob(jobId, freelancerId).catch(() => {});
+  }, [setData]);
 
-        {/* History */}
-        <div className="mt-5 border-t border-neutral-100 pt-4 dark:border-neutral-800">
-          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-neutral-400">Histórico</p>
-          <div className="space-y-1.5">
-            {contract.history.map((h, i) => (
-              <div key={i} className="flex items-center justify-between text-xs text-neutral-500 dark:text-neutral-400">
-                <span>{contractStatusLabel(h.status)}</span>
-                <span>{formatDateBR(h.at)}</span>
-              </div>
-            ))}
-          </div>
-        </div>
+  const notifyUser = useCallback((userId: string, type: AppNotification['type'], title: string, body: string, contractId?: string) => {
+    const n: AppNotification = { id: crypto.randomUUID(), userId, type, title, body, read: false, date: new Date().toISOString(), contractId };
+    setData((d) => ({ ...d, notifications: [n, ...d.notifications] }));
+    void dbInsertNotification(n).catch(() => {});
+  }, [setData]);
 
-        {contract.status === 'completed' && (
-          <div className="mt-4">
-            <Button fullWidth size="lg" variant="outline" onClick={() => downloadTaxReceipt(contract)}>
-              <Download className="h-5 w-5" /> Baixar Comprovante de Prestação (Contabilidade)
-            </Button>
-          </div>
-        )}
-      </Modal>
+  const markNotificationRead = useCallback((id: string) => {
+    setData((d) => ({ ...d, notifications: d.notifications.map((n) => (n.id === id ? { ...n, read: true } : n)) }));
+    void dbMarkNotificationRead(id).catch(() => {});
+  }, [setData]);
 
-      {reviewOpen && canReview && (
-        <ReviewModal
-          open={reviewOpen}
-          onClose={() => setReviewOpen(false)}
-          contractId={contract.id}
-          fromId={currentUser.id}
-          fromName={currentUser.name}
-          toId={isFreelancer ? contract.establishmentId : contract.freelancerId}
-          toName={isFreelancer ? contract.establishmentName : contract.freelancerName}
-        />
-      )}
-    </>
-  );
-}
+  const markAllNotificationsRead = useCallback((userId: string) => {
+    setData((d) => ({ ...d, notifications: d.notifications.map((n) => (n.userId === userId ? { ...n, read: true } : n)) }));
+    void dbMarkAllNotificationsRead(userId).catch(() => {});
+  }, [setData]);
 
-function Row({ label, value, bold }: { label: string; value: string; bold?: boolean }) {
-  return (
-    <div className="flex items-center justify-between">
-      <span className={bold ? 'font-semibold text-neutral-900 dark:text-white' : 'text-sm text-neutral-600 dark:text-neutral-300'}>{label}</span>
-      <span className={bold ? 'font-display text-lg font-extrabold text-primary-600 dark:text-primary-400' : 'font-semibold text-neutral-800 dark:text-neutral-100'}>{value}</span>
-    </div>
-  );
+  const userNotifications = useCallback((userId: string) => data?.notifications.filter((n) => n.userId === userId) ?? [], [data?.notifications]);
+  const userWalletBalance = useCallback((userId: string) => data?.users.find((u) => u.id === userId)?.walletBalance ?? 0, [data?.users]);
+  const userWalletTxs = useCallback((userId: string) => data?.walletTxs.filter((t) => t.userId === userId) ?? [], [data?.walletTxs]);
+  const adminWalletTxs = useCallback(() => data?.walletTxs.filter((t) => t.userId === ADMIN_ID) ?? [], [data?.walletTxs]);
+
+  const depositToWallet = useCallback((userId: string, amount: number, description?: string) => {
+    if (!data) return;
+    const tx: WalletTx = { id: crypto.randomUUID(), userId, type: 'deposit', amount, description: description ?? 'Depósito', date: new Date().toISOString() };
+    setData((d) => ({
+      ...d,
+      users: d.users.map((u) => (u.id === userId ? { ...u, walletBalance: (u.walletBalance ?? 0) + amount } : u)),
+      walletTxs: [tx, ...d.walletTxs]
+    }));
+    void dbInsertWalletTx(tx).catch(() => {});
+    const newBal = (data.users.find((u) => u.id === userId)?.walletBalance ?? 0) + amount;
+    void dbUpdateWalletBalance(userId, newBal).catch(() => {});
+  }, [setData, data]);
+
+  const withdrawFromWallet = useCallback((userId: string, amount: number, description?: string) => {
+    if (!data) return;
+    const tx: WalletTx = { id: crypto.randomUUID(), userId, type: 'withdraw', amount: -amount, description: description ?? 'Saque', date: new Date().toISOString() };
+    setData((d) => ({
+      ...d,
+      users: d.users.map((u) => (u.id === userId ? { ...u, walletBalance: Math.max(0, (u.walletBalance ?? 0) - amount) } : u)),
+      walletTxs: [tx, ...d.walletTxs]
+    }));
+    void dbInsertWalletTx(tx).catch(() => {});
+    const newBal = Math.max(0, (data.users.find((u) => u.id === userId)?.walletBalance ?? 0) - amount);
+    void dbUpdateWalletBalance(userId, newBal).catch(() => {});
+  }, [setData, data]);
+
+  const requestHire = useCallback((establishmentId: string, freelancerId: string, jobId: string | null, hours: number, freelancerFee: number): Contract => {
+    const est = data?.users.find((u) => u.id === establishmentId);
+    const fl = data?.users.find((u) => u.id === freelancerId);
+
+    const defaultFee = data?.config?.defaultFeePercent ?? 15;
+    const feePercent = est ? getIntermediationFeePercent(est, data.estVipPlans, data.vipPlans, defaultFee) : defaultFee;
+    const { fee, total } = calculateFees(freelancerFee, feePercent);
+
+    const contract: Contract = {
+      id: crypto.randomUUID(), 
+      jobId, 
+      establishmentId, 
+      establishmentName: est?.name ?? '',
+      freelancerId, 
+      freelancerName: fl?.name ?? '', 
+      freelancerPhoto: fl?.photo ?? '',
+      freelancerPhone: fl?.phone ?? '', 
+      freelancerWhatsapp: fl?.whatsapp ?? '',
+      category: fl?.categories?.[0] ?? 'geral', 
+      date: new Date().toISOString(), 
+      hours,
+      freelancerFee, 
+      platformFeePercentage: feePercent, 
+      platformFee: fee, 
+      total,
+      status: 'requested', 
+      createdAt: new Date().toISOString(), 
+      history: [{ status: 'requested', at: new Date().toISOString() }],
+    };
+
+    const notifs: AppNotification[] = [
+      { id: crypto.randomUUID(), userId: freelancerId, type: 'hire_request', title: 'Nova solicitação', body: `${est?.name} quer te contratar.`, read: false, date: new Date().toISOString(), contractId: contract.id },
+    ];
+
+    setData((d) => ({ ...d, contracts: [contract, ...d.contracts], notifications: [...notifs, ...d.notifications] }));
+    void dbInsertContract(contract).catch(() => {});
+    return contract;
+  }, [data, setData]);
+
+  const confirmAvailability = useCallback(async (contractId: string) => {
+    if (!data) return;
+    const contract = data.contracts.find((c) => c.id === contractId);
+    if (!contract) return;
+
+    const updatedHistory = [...(contract.history || []), { status: 'confirmed' as ContractStatus, at: new Date().toISOString() }];
+
+    setData((d) => ({
+      ...d,
+      contracts: d.contracts.map((ct) => (ct.id === contractId ? { ...ct, status: 'confirmed', history: updatedHistory } : ct)),
+      notifications: [
+        { id: crypto.randomUUID(), userId: contract.establishmentId, type: 'hire_request', title: 'Disponibilidade Confirmada!', body: `${contract.freelancerName} confirmou a disponibilidade. Realize o pagamento em garantia para liberar o contato.`, read: false, date: new Date().toISOString(), contractId },
+        ...d.notifications
+      ]
+    }));
+
+    void dbUpdateContractStatus(contractId, 'confirmed').catch(() => {});
+  }, [data, setData]);
+
+  const payEscrow = useCallback((contractId: string, paymentMethod: 'wallet' | 'pix' | 'card' = 'wallet'): { ok: boolean; error?: string } => {
+    if (!data) return { ok: false, error: 'Sistema carregando.' };
+    const c = data.contracts.find((x) => x.id === contractId);
+    const est = data.users.find(u => u.id === c?.establishmentId);
+    if (!c || !est) return { ok: false, error: 'Contrato ou usuário não encontrado.' };
+
+    if (paymentMethod === 'wallet' && (est.walletBalance ?? 0) < c.total) {
+      return { ok: false, error: 'Saldo insuficiente na carteira.' };
+    }
+
+    const newBalance = paymentMethod === 'wallet' ? Math.max(0, est.walletBalance - c.total) : est.walletBalance;
+    const invoiceId = c.coraInvoiceId ?? `inv-${crypto.randomUUID()}`;
+    const estTx: WalletTx = { id: crypto.randomUUID(), userId: c.establishmentId, type: 'escrow_hold', amount: -c.total, description: `Escrow — ${c.freelancerName}`, contractId, date: new Date().toISOString() };
+    const updatedHistory = [...(c.history || []), { status: 'paid' as ContractStatus, at: new Date().toISOString() }];
+
+    setData((d) => ({
+      ...d,
+      users: d.users.map(u => u.id === c.establishmentId ? { ...u, walletBalance: newBalance } : u),
+      contracts: d.contracts.map((ct) => ct.id === contractId ? { ...ct, status: 'paid', coraInvoiceId: invoiceId, history: updatedHistory } : ct),
+      walletTxs: [estTx, ...d.walletTxs],
+      notifications: [
+        { id: crypto.randomUUID(), userId: c.freelancerId, type: 'hire_request', title: 'Pagamento Realizado!', body: `O estabelecimento ${c.establishmentName} realizou o pagamento em garantia. Contato liberado!`, read: false, date: new Date().toISOString(), contractId },
+        ...d.notifications
+      ]
+    }));
+
+    void dbUpdateContractStatus(contractId, 'paid').catch(() => {});
+    void dbUpdateContractInvoice(contractId, invoiceId).catch(() => {});
+    void dbInsertWalletTx(estTx).catch(() => {});
+    if (paymentMethod === 'wallet') void dbUpdateWalletBalance(c.establishmentId, newBalance).catch(() => {});
+    
+    return { ok: true };
+  }, [data, setData]);
+
+  const requestCheckIn = useCallback((contractId: string) => {
+    if (!data) return;
+    const c = data.contracts.find(x => x.id === contractId);
+    if (!c) return;
+
+    const updatedHistory = [...(c.history || []), { status: 'check_in_pending' as ContractStatus, at: new Date().toISOString(), note: 'Profissional registrou chegada, aguardando estabelecimento.' }];
+
+    setData((d) => ({
+      ...d,
+      contracts: d.contracts.map((ct) => ct.id === contractId ? { ...ct, status: 'check_in_pending', history: updatedHistory } : ct),
+      notifications: [
+        { id: crypto.randomUUID(), userId: c.establishmentId, type: 'announcement', title: 'Chegada do Profissional', body: `${c.freelancerName} fez o check-in e aguarda sua confirmação de presença.`, read: false, date: new Date().toISOString(), contractId },
+        ...d.notifications
+      ]
+    }));
+    void dbUpdateContractStatus(contractId, 'check_in_pending').catch(() => {});
+  }, [data, setData]);
+
+  const confirmCheckIn = useCallback((contractId: string) => {
+    if (!data) return;
+    const c = data.contracts.find(x => x.id === contractId);
+    if (!c) return;
+
+    const updatedHistory = [...(c.history || []), { status: 'checked_in' as ContractStatus, at: new Date().toISOString(), note: 'Estabelecimento confirmou a presença.' }];
+
+    setData((d) => ({
+      ...d,
+      contracts: d.contracts.map((ct) => ct.id === contractId ? { ...ct, status: 'checked_in', history: updatedHistory } : ct),
+      notifications: [
+        { id: crypto.randomUUID(), userId: c.freelancerId, type: 'announcement', title: 'Check-in Confirmado!', body: `O estabelecimento ${c.establishmentName} confirmou sua presença. Bom trabalho!`, read: false, date: new Date().toISOString(), contractId },
+        ...d.notifications
+      ]
+    }));
+    void dbUpdateContractStatus(contractId, 'checked_in').catch(() => {});
+  }, [data, setData]);
+
+  const finishService = useCallback((contractId: string) => {
+    if (!data) return;
+    const c = data.contracts.find((x) => x.id === contractId);
+    if (!c) return;
+    const flRelease: WalletTx = { id: crypto.randomUUID(), userId: c.freelancerId, type: 'escrow_release', amount: c.freelancerFee, description: `Repasse — ${c.establishmentName}`, contractId, date: new Date().toISOString() };
+    const adminFee: WalletTx = { id: crypto.randomUUID(), userId: ADMIN_ID, type: 'platform_fee', amount: c.platformFee, description: `Taxa (${c.platformFeePercentage}%)`, contractId, date: new Date().toISOString() };
+    const updatedHistory = [...(c.history || []), { status: 'completed' as ContractStatus, at: new Date().toISOString() }];
+
+    setData((d) => ({
+      ...d,
+      contracts: d.contracts.map((ct) => ct.id === contractId ? { ...ct, status: 'completed', history: updatedHistory } : ct),
+      walletTxs: [flRelease, adminFee, ...d.walletTxs]
+    }));
+    void dbUpdateContractStatus(contractId, 'completed').catch(() => {});
+    void dbInsertWalletTx(flRelease).catch(() => {});
+    void dbInsertWalletTx(adminFee).catch(() => {});
+  }, [data, setData]);
+
+  const cancelContract = useCallback((contractId: string) => {
+    if (!data) return;
+    const c = data.contracts.find(x => x.id === contractId);
+    const updatedHistory = [...(c?.history || []), { status: 'cancelled' as ContractStatus, at: new Date().toISOString() }];
+
+    setData((d) => ({
+      ...d,
+      contracts: d.contracts.map((ct) => ct.id === contractId ? { ...ct, status: 'cancelled', history: updatedHistory } : ct)
+    }));
+    void dbUpdateContractStatus(contractId, 'cancelled').catch(() => {});
+  }, [data, setData]);
+
+  const submitReview = useCallback((contractId: string, fromId: string, fromName: string, toId: string, rating: number, comment: string) => {
+    if (!data) return;
+    const review: Review = { id: crypto.randomUUID(), fromId, fromName, toId, rating, comment, date: new Date().toISOString() };
+    setData((d) => ({ ...d, reviews: [review, ...d.reviews] }));
+    void dbInsertReview(review, contractId, false).catch(() => {});
+  }, [data, setData]);
+
+  const reviewsFor = useCallback((userId: string) => data?.reviews.filter((r) => r.toId === userId) ?? [], [data?.reviews]);
+
+  const setDefaultFeePercent = useCallback((n: number) => {
+    setData((d) => ({ ...d, config: { ...d.config, defaultFeePercent: n } }));
+    void dbUpdateDefaultFeePercent(n).catch(() => {});
+  }, [setData]);
+
+  const updatePaymentSettings = useCallback((settings: PaymentSettings) => {
+    setData((d) => ({ ...d, paymentSettings: settings }));
+    void dbUpdatePaymentSettings(settings).catch(() => {});
+  }, [setData]);
+
+  const overrideContractStatus = useCallback((contractId: string, status: ContractStatus) => {
+    setData((d) => ({ ...d, contracts: d.contracts.map((c) => c.id === contractId ? { ...c, status } : c) }));
+    void dbUpdateContractStatus(contractId, status).catch(() => {});
+  }, [setData]);
+
+  const forceRefund = useCallback((contractId: string) => {
+    if (!data) return;
+    setData((d) => ({ ...d, contracts: d.contracts.map((ct) => ct.id === contractId ? { ...ct, status: 'cancelled' } : ct) }));
+    void dbUpdateContractStatus(contractId, 'cancelled').catch(() => {});
+  }, [setData, data]);
+
+  const coupons = useMemo(() => data?.coupons ?? [], [data?.coupons]);
+
+  const validateCoupon = useCallback((code: string) => {
+    if (!data) return { error: 'Carregando.' };
+    const c = data.coupons.find((cp) => cp.code.toUpperCase() === code.toUpperCase().trim() && cp.isActive);
+    if (!c) return { error: 'Cupom inválido.' };
+    return { coupon: c };
+  }, [data]);
+
+  const addCoupon = useCallback((coupon: Omit<Coupon, 'id' | 'createdAt'>) => {
+    const newCoupon = { ...coupon, id: crypto.randomUUID(), usedBy: [], createdAt: new Date().toISOString() };
+    setData((d) => ({ ...d, coupons: [newCoupon, ...d.coupons] }));
+    void dbInsertCoupon(newCoupon).catch(() => {});
+  }, [setData]);
+
+  const toggleCoupon = useCallback((id: string) => {
+    setData((d) => ({ ...d, coupons: d.coupons.map((c) => c.id === id ? { ...c, isActive: !c.isActive } : c) }));
+    void dbToggleCoupon(id).catch(() => {});
+  }, [setData]);
+
+  const deleteCoupon = useCallback((id: string) => {
+    setData((d) => ({ ...d, coupons: d.coupons.filter((c) => c.id !== id) }));
+    void dbDeleteCoupon(id).catch(() => {});
+  }, [setData]);
+
+  const applyCouponToPurchase = useCallback((userId: string, tier: Tier | EstTier, period: Period, coupon: Coupon, accountType: 'freelancer' | 'establishment') => {
+    return { ok: true, discountedPrice: 0 };
+  }, []);
+
+  const auditLogs = useMemo(() => data?.adminAuditLogs ?? [], [data?.adminAuditLogs]);
+  const logAdminAction = useCallback((action: string, targetUserId?: string) => {
+    const auditLog = { id: crypto.randomUUID(), adminId: currentAdminId, action, targetUserId, createdAt: new Date().toISOString() };
+    setData((d) => ({ ...d, adminAuditLogs: [auditLog, ...d.adminAuditLogs] }));
+    void dbInsertAuditLog(auditLog).catch(() => {});
+  }, [setData, currentAdminId]);
+
+  const adminCreateUser = useCallback(async (user: User) => { 
+    setData((d) => ({ ...d, users: [...d.users, user] }));
+    await dbInsertUser(user);
+    return { ok: true };
+  }, [setData]);
+
+  const adminCreateAdmin = useCallback(async (user: any) => {
+    const adminUser = { ...user, id: crypto.randomUUID(), isAdmin: true };
+    setData((d) => ({ ...d, users: [...d.users, adminUser] }));
+    await dbInsertAdmin(adminUser);
+    return { ok: true };
+  }, [setData]);
+
+  const adminRemoveAdmin = useCallback((id: string) => {
+    setData((d) => ({ ...d, users: d.users.filter((u) => u.id !== id) }));
+    void dbDeleteUser(id).catch(() => {});
+  }, [setData]);
+
+  const adjustWallet = useCallback((userId: string, amount: number, description: string) => {
+    if (!data) return;
+    const tx: WalletTx = { 
+      id: crypto.randomUUID(), 
+      userId, 
+      type: amount >= 0 ? 'deposit' : 'withdraw', 
+      amount, 
+      description: `[Admin] ${description}`, 
+      date: new Date().toISOString() 
+    };
+    const auditLog = { 
+      id: crypto.randomUUID(), 
+      adminId: currentAdminId, 
+      action: `Admin ajustou carteira de ${userId} em ${amount >= 0 ? '+' : ''}${amount} (${description})`, 
+      targetUserId: userId, 
+      createdAt: new Date().toISOString() 
+    };
+    setData((d) => ({
+      ...d,
+      users: d.users.map((u) => (u.id === userId ? { ...u, walletBalance: Math.max(0, (u.walletBalance ?? 0) + amount) } : u)),
+      walletTxs: [tx, ...d.walletTxs],
+      adminAuditLogs: [auditLog, ...d.adminAuditLogs]
+    }));
+    void dbInsertWalletTx(tx).catch(() => {});
+    const user = data.users.find((u) => u.id === userId);
+    if (user) {
+      const newBalance = Math.max(0, (user.walletBalance ?? 0) + amount);
+      void dbUpdateWalletBalance(userId, newBalance).catch(() => {});
+    }
+    void dbInsertAuditLog(auditLog).catch(() => {});
+  }, [setData, currentAdminId, data]);
+
+  const deleteReview = useCallback((reviewId: string) => {
+    setData((d) => ({ ...d, reviews: d.reviews.filter((r) => r.id !== reviewId) }));
+    void dbDeleteReview(reviewId).catch(() => {});
+  }, [setData]);
+
+  const broadcastNotification = useCallback((title: string, body: string) => {
+    data?.users.forEach(u => {
+        notifyUser(u.id, 'announcement', title, body);
+    });
+  }, [data, notifyUser]);
+
+  const updateVipPlan = useCallback((tier: Tier, patch: Partial<VipPlan>) => {
+    setData((d) => ({ ...d, vipPlans: d.vipPlans.map((p) => p.tier === tier ? { ...p, ...patch } : p) }));
+    const plan = data?.vipPlans.find(p => p.tier === tier);
+    if (plan) void dbUpsertVipPlan({ ...plan, ...patch }).catch(() => {});
+  }, [setData, data]);
+
+  const addVipPlan = useCallback((plan: VipPlan) => {
+    setData((d) => ({ ...d, vipPlans: [...d.vipPlans, plan] }));
+    void dbUpsertVipPlan(plan).catch(() => {});
+  }, [setData]);
+
+  const removeVipPlan = useCallback((tier: Tier) => {
+    setData((d) => ({ ...d, vipPlans: d.vipPlans.filter((p) => p.tier !== tier) }));
+    void dbDeleteVipPlan(tier).catch(() => {});
+  }, [setData]);
+
+  const updateEstVipPlan = useCallback((tier: EstTier, patch: Partial<EstVipPlan>) => {
+    setData((d) => ({ ...d, estVipPlans: d.estVipPlans.map((p) => p.tier === tier ? { ...p, ...patch } : p) }));
+    const plan = data?.estVipPlans.find(p => p.tier === tier);
+    if (plan) void dbUpsertEstVipPlan({ ...plan, ...patch }).catch(() => {});
+  }, [setData, data]);
+
+  const addEstVipPlan = useCallback((plan: EstVipPlan) => {
+    setData((d) => ({ ...d, estVipPlans: [...d.estVipPlans, plan] }));
+    void dbUpsertEstVipPlan(plan).catch(() => {});
+  }, [setData]);
+
+  const removeEstVipPlan = useCallback((tier: EstTier) => {
+    setData((d) => ({ ...d, estVipPlans: d.estVipPlans.filter((p) => p.tier !== tier) }));
+    void dbDeleteEstVipPlan(tier).catch(() => {});
+  }, [setData]);
+
+  const enterAdminMode = useCallback(() => setAdminMode(true), []);
+  const exitAdminMode = useCallback(() => { setAdminMode(false); setAdminTab('overview'); }, []);
+
+  const freelancers = useMemo(() => data?.users.filter((u) => u.accountType === 'freelancer' && !u.isAdmin) ?? [], [data?.users]);
+  const establishments = useMemo(() => data?.users.filter((u) => u.accountType === 'establishment') ?? [], [data?.users]);
+  const nearbyFreelancers = useCallback((city: string) => {
+    if (!data) return [];
+    const nearby = metroNearby(city);
+    return data.users.filter((u) => u.accountType === 'freelancer' && !u.isAdmin && !u.banned && nearby.includes(u.address.city));
+  }, [data?.users]);
+  const categoryById = useCallback((id: string) => CATEGORIES.find((c) => c.id === id), []);
+
+  const value = useMemo<AppContextValue>(() => ({
+    data: data!, currentUser, isAdmin, isSuperAdmin, login, register, logout, updateUser, adminUpdateUser, deleteEntity, banUser, unbanUser, setVipTier, setEstVipTier, setTermsAcceptance,
+    setAvailability, toggleAvailabilitySlot, toggleDateShift, toggleCategory,
+    addJob, updateJob, deleteJob, pauseJob, applyToJob,
+    requestHire, confirmAvailability, payEscrow, requestCheckIn, confirmCheckIn, finishService, cancelContract,
+    submitReview, notify: notifyUser, markNotificationRead, markAllNotificationsRead, userNotifications,
+    userWalletBalance, userWalletTxs, adminWalletTxs, depositToWallet, withdrawFromWallet,
+    reviewsFor, setDefaultFeePercent, updatePaymentSettings, overrideContractStatus, forceRefund, resetData,
+    freelancers, establishments, nearbyFreelancers, categoryById,
+    adminTab, setAdminTab, adminMode, exitAdminMode, enterAdminMode,
+    coupons, validateCoupon, addCoupon, toggleCoupon, deleteCoupon, applyCouponToPurchase,
+    auditLogs, logAdminAction, adminCreateUser, adminCreateAdmin, removeAdmin: adminRemoveAdmin, adjustWallet, deleteReview, broadcastNotification,
+    updateVipPlan, addVipPlan, removeVipPlan, updateEstVipPlan, addEstVipPlan, removeEstVipPlan,
+  }), [
+    data, currentUser, isAdmin, isSuperAdmin, login, register, logout, updateUser, adminUpdateUser, deleteEntity, banUser, unbanUser, setVipTier, setEstVipTier, setTermsAcceptance,
+    setAvailability, toggleAvailabilitySlot, toggleDateShift, toggleCategory, addJob, updateJob, deleteJob, pauseJob, applyToJob,
+    requestHire, confirmAvailability, payEscrow, requestCheckIn, confirmCheckIn, finishService, cancelContract,
+    submitReview, notifyUser, markNotificationRead, markAllNotificationsRead, userNotifications,
+    userWalletBalance, userWalletTxs, adminWalletTxs, depositToWallet, withdrawFromWallet,
+    reviewsFor, setDefaultFeePercent, updatePaymentSettings, overrideContractStatus, forceRefund, resetData, freelancers, establishments, nearbyFreelancers, categoryById,
+    adminTab, setAdminTab, adminMode, exitAdminMode, enterAdminMode,
+    coupons, validateCoupon, addCoupon, toggleCoupon, deleteCoupon, applyCouponToPurchase,
+    auditLogs, logAdminAction, adminCreateUser, adminCreateAdmin, adminRemoveAdmin, adjustWallet, deleteReview, broadcastNotification,
+    updateVipPlan, addVipPlan, removeVipPlan, updateEstVipPlan, addEstVipPlan, removeEstVipPlan,
+  ]);
+
+  if (!loaded || !data) {
+    return <div className="flex min-h-screen items-center justify-center bg-neutral-950 text-white"><div className="animate-pulse text-sm">Carregando FreelaAgora…</div></div>;
+  }
+
+  return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }
