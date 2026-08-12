@@ -23,6 +23,118 @@ export { useApp };
 const ADMIN_ID = '00000000-0000-0000-0000-000000000001';
 const STORAGE_KEY = 'freelaagora_current_user';
 
+// Mapeadores para converter campos do Supabase (snake_case) para o React (camelCase)
+const mapJob = (raw: any): Job => ({
+  id: raw.id,
+  establishmentId: raw.establishment_id ?? raw.establishmentId ?? '',
+  establishmentName: raw.establishment_name ?? raw.establishmentName ?? '',
+  establishmentPhoto: raw.establishment_photo ?? raw.establishmentPhoto ?? '',
+  title: raw.title ?? '',
+  description: raw.description ?? '',
+  category: raw.category ?? '',
+  macroCategory: raw.macro_category ?? raw.macroCategory ?? '',
+  date: raw.date ?? '',
+  shift: raw.shift ?? 'manha',
+  hours: Number(raw.hours ?? 8),
+  hourlyRate: Number(raw.hourly_rate ?? raw.hourlyRate ?? 0),
+  dailyRate: Number(raw.daily_rate ?? raw.dailyRate ?? 0),
+  value: Number(raw.value ?? 0),
+  city: raw.city ?? '',
+  state: raw.state ?? '',
+  neighborhood: raw.neighborhood ?? '',
+  urgency: raw.urgency ?? 'esta_semana',
+  status: raw.status ?? 'active',
+  applicants: Array.isArray(raw.applicants) ? raw.applicants : [],
+  createdAt: raw.created_at ?? raw.createdAt ?? new Date().toISOString(),
+});
+
+const mapContract = (raw: any): Contract => ({
+  id: raw.id,
+  jobId: raw.job_id ?? raw.jobId ?? null,
+  establishmentId: raw.establishment_id ?? raw.establishmentId ?? '',
+  establishmentName: raw.establishment_name ?? raw.establishmentName ?? '',
+  freelancerId: raw.freelancer_id ?? raw.freelancerId ?? '',
+  freelancerName: raw.freelancer_name ?? raw.freelancerName ?? '',
+  freelancerPhoto: raw.freelancer_photo ?? raw.freelancerPhoto ?? '',
+  freelancerPhone: raw.freelancer_phone ?? raw.freelancerPhone ?? '',
+  freelancerWhatsapp: raw.freelancer_whatsapp ?? raw.freelancerWhatsapp ?? '',
+  category: raw.category ?? 'geral',
+  date: raw.date ?? new Date().toISOString(),
+  hours: Number(raw.hours ?? 8),
+  freelancerFee: Number(raw.freelancer_fee ?? raw.freelancerFee ?? 0),
+  platformFeePercentage: Number(raw.platform_fee_percentage ?? raw.platformFeePercentage ?? 15),
+  platformFee: Number(raw.platform_fee ?? raw.platformFee ?? 0),
+  total: Number(raw.total ?? 0),
+  status: raw.status ?? 'requested',
+  coraInvoiceId: raw.cora_invoice_id ?? raw.coraInvoiceId ?? undefined,
+  createdAt: raw.created_at ?? raw.createdAt ?? new Date().toISOString(),
+  history: Array.isArray(raw.history) ? raw.history : [{ status: raw.status ?? 'requested', at: new Date().toISOString() }],
+});
+
+const mapUser = (raw: any): User => ({
+  id: raw.id,
+  name: raw.name ?? '',
+  email: raw.email ?? '',
+  password: raw.password ?? raw.password_hash ?? '',
+  accountType: raw.account_type ?? raw.accountType ?? 'freelancer',
+  phone: raw.phone ?? '',
+  whatsapp: raw.whatsapp ?? '',
+  cpf: raw.cpf ?? '',
+  cnpj: raw.cnpj ?? '',
+  cpfCnpj: raw.cpf_cnpj ?? raw.cpfCnpj ?? '',
+  bio: raw.bio ?? '',
+  photo: raw.photo ?? '',
+  nickname: raw.nickname ?? '',
+  address: raw.address ?? emptyAvailability(),
+  rating: Number(raw.rating ?? 5),
+  reviewsCount: Number(raw.reviews_count ?? raw.reviewsCount ?? 0),
+  completedShifts: Number(raw.completed_shifts ?? raw.completedShifts ?? 0),
+  walletBalance: Number(raw.wallet_balance ?? raw.walletBalance ?? 0),
+  vipTier: raw.vip_tier ?? raw.vipTier ?? 'free',
+  estVipTier: raw.est_vip_tier ?? raw.estVipTier ?? 'free',
+  trialEndsAt: raw.trial_ends_at ?? raw.trialEndsAt ?? null,
+  categories: Array.isArray(raw.categories) ? raw.categories : [],
+  availability: raw.availability ?? emptyAvailability(),
+  dateAvailability: raw.date_availability ?? raw.dateAvailability ?? {},
+  hourlyRate: Number(raw.hourly_rate ?? raw.hourlyRate ?? 0),
+  dailyRate: Number(raw.daily_rate ?? raw.dailyRate ?? 0),
+  unlimitedKm: Boolean(raw.unlimited_km ?? raw.unlimitedKm ?? false),
+  banned: Boolean(raw.banned ?? false),
+  isAdmin: Boolean(raw.is_admin ?? raw.isAdmin ?? false),
+  createdAt: raw.created_at ?? raw.createdAt ?? new Date().toISOString(),
+} as User);
+
+const mapNotification = (raw: any): AppNotification => ({
+  id: raw.id,
+  userId: raw.user_id ?? raw.userId ?? '',
+  type: raw.type ?? 'announcement',
+  title: raw.title ?? '',
+  body: raw.body ?? '',
+  read: Boolean(raw.read ?? false),
+  date: raw.date ?? raw.created_at ?? new Date().toISOString(),
+  contractId: raw.contract_id ?? raw.contractId ?? undefined,
+});
+
+const mapReview = (raw: any): Review => ({
+  id: raw.id,
+  fromId: raw.from_id ?? raw.fromId ?? '',
+  fromName: raw.from_name ?? raw.fromName ?? '',
+  toId: raw.to_id ?? raw.toId ?? '',
+  rating: Number(raw.rating ?? 5),
+  comment: raw.comment ?? '',
+  date: raw.date ?? raw.created_at ?? new Date().toISOString(),
+});
+
+const mapWalletTx = (raw: any): WalletTx => ({
+  id: raw.id,
+  userId: raw.user_id ?? raw.userId ?? '',
+  type: raw.type ?? 'deposit',
+  amount: Number(raw.amount ?? 0),
+  description: raw.description ?? '',
+  contractId: raw.contract_id ?? raw.contractId ?? undefined,
+  date: raw.date ?? raw.created_at ?? new Date().toISOString(),
+});
+
 export function AppProvider({ children }: { children: ReactNode }) {
   const [data, setDataState] = useState<AppData>(() => {
     try {
@@ -56,7 +168,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => { cancelled = true; };
   }, []);
 
-  // 2. Realtime Listener Global para TODOS os movimentos do site
+  // 2. Realtime Listener Global (Com mapeamento completo snake_case -> camelCase)
   useEffect(() => {
     const channel = supabase
       .channel('realtime-global-updates')
@@ -66,10 +178,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
         { event: '*', schema: 'public', table: 'jobs' },
         (payload) => {
           if (payload.eventType === 'INSERT') {
-            const item = payload.new as Job;
+            const item = mapJob(payload.new);
             setDataState((prev) => (prev.jobs.some((j) => j.id === item.id) ? prev : { ...prev, jobs: [item, ...prev.jobs] }));
           } else if (payload.eventType === 'UPDATE') {
-            const item = payload.new as Job;
+            const item = mapJob(payload.new);
             setDataState((prev) => ({ ...prev, jobs: prev.jobs.map((j) => (j.id === item.id ? { ...j, ...item } : j)) }));
           } else if (payload.eventType === 'DELETE') {
             const deletedId = payload.old.id;
@@ -83,10 +195,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
         { event: '*', schema: 'public', table: 'users' },
         (payload) => {
           if (payload.eventType === 'INSERT') {
-            const item = payload.new as User;
+            const item = mapUser(payload.new);
             setDataState((prev) => (prev.users.some((u) => u.id === item.id) ? prev : { ...prev, users: [...prev.users, item] }));
           } else if (payload.eventType === 'UPDATE') {
-            const item = payload.new as User;
+            const item = mapUser(payload.new);
             setDataState((prev) => ({ ...prev, users: prev.users.map((u) => (u.id === item.id ? { ...u, ...item } : u)) }));
           } else if (payload.eventType === 'DELETE') {
             const deletedId = payload.old.id;
@@ -100,10 +212,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
         { event: '*', schema: 'public', table: 'contracts' },
         (payload) => {
           if (payload.eventType === 'INSERT') {
-            const item = payload.new as Contract;
+            const item = mapContract(payload.new);
             setDataState((prev) => (prev.contracts.some((c) => c.id === item.id) ? prev : { ...prev, contracts: [item, ...prev.contracts] }));
           } else if (payload.eventType === 'UPDATE') {
-            const item = payload.new as Contract;
+            const item = mapContract(payload.new);
             setDataState((prev) => ({ ...prev, contracts: prev.contracts.map((c) => (c.id === item.id ? { ...c, ...item } : c)) }));
           } else if (payload.eventType === 'DELETE') {
             const deletedId = payload.old.id;
@@ -117,10 +229,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
         { event: '*', schema: 'public', table: 'notifications' },
         (payload) => {
           if (payload.eventType === 'INSERT') {
-            const item = payload.new as AppNotification;
+            const item = mapNotification(payload.new);
             setDataState((prev) => (prev.notifications.some((n) => n.id === item.id) ? prev : { ...prev, notifications: [item, ...prev.notifications] }));
           } else if (payload.eventType === 'UPDATE') {
-            const item = payload.new as AppNotification;
+            const item = mapNotification(payload.new);
             setDataState((prev) => ({ ...prev, notifications: prev.notifications.map((n) => (n.id === item.id ? { ...n, ...item } : n)) }));
           } else if (payload.eventType === 'DELETE') {
             const deletedId = payload.old.id;
@@ -134,10 +246,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
         { event: '*', schema: 'public', table: 'reviews' },
         (payload) => {
           if (payload.eventType === 'INSERT') {
-            const item = payload.new as Review;
+            const item = mapReview(payload.new);
             setDataState((prev) => (prev.reviews.some((r) => r.id === item.id) ? prev : { ...prev, reviews: [item, ...prev.reviews] }));
           } else if (payload.eventType === 'UPDATE') {
-            const item = payload.new as Review;
+            const item = mapReview(payload.new);
             setDataState((prev) => ({ ...prev, reviews: prev.reviews.map((r) => (r.id === item.id ? { ...r, ...item } : r)) }));
           } else if (payload.eventType === 'DELETE') {
             const deletedId = payload.old.id;
@@ -145,16 +257,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
           }
         }
       )
-      // --- TRANSAÇÕES DA CARTEIRA (WALLET_TXS) ---
+      // --- TRANSAÇÕES DA CARTEIRA (WALLET_TRANSACTIONS) ---
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'wallet_txs' },
+        { event: '*', schema: 'public', table: 'wallet_transactions' },
         (payload) => {
           if (payload.eventType === 'INSERT') {
-            const item = payload.new as WalletTx;
+            const item = mapWalletTx(payload.new);
             setDataState((prev) => (prev.walletTxs.some((t) => t.id === item.id) ? prev : { ...prev, walletTxs: [item, ...prev.walletTxs] }));
           } else if (payload.eventType === 'UPDATE') {
-            const item = payload.new as WalletTx;
+            const item = mapWalletTx(payload.new);
             setDataState((prev) => ({ ...prev, walletTxs: prev.walletTxs.map((t) => (t.id === item.id ? { ...t, ...item } : t)) }));
           } else if (payload.eventType === 'DELETE') {
             const deletedId = payload.old.id;
