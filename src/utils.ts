@@ -76,24 +76,71 @@ export function estPlanPrice(tier: EstTier, period: Period, plans?: EstVipPlan[]
   return getEstPlan(tier, plans).prices[period];
 }
 
-// BUSCA A TAXA CONFIGURADA NO PAINEL ADMIN (Com trava de segurança para VIP 6)
-export function getIntermediationFeePercent(user: User, plans?: EstVipPlan[]): number {
-  if (user.accountType !== 'establishment') return 15.0;
-  if (isEstablishmentOnTrial(user)) return 0;
-  
-  // Trava direta para garantir taxa zero no VIP 6 independente do banco/cache
-  if (user.estVipTier === 'vip6') return 0;
-  
-  const plan = getEstPlan(user.estVipTier ?? 'free', plans);
-  return plan.intermediationFee ?? 0;
+export function isEstablishmentOnTrial(user: User): boolean {
+  if (!user || user.accountType !== 'establishment') return false;
+  if (user.estVipTier === 'trial' || user.vipTier === 'trial') {
+    if (!user.trialEndsAt) return true;
+    return new Date(user.trialEndsAt) > new Date();
+  }
+  if (user.trialEndsAt && (!user.estVipTier || user.estVipTier === 'free' || user.estVipTier === 'trial')) {
+    return new Date(user.trialEndsAt) > new Date();
+  }
+  return false;
 }
 
-export function isEstablishmentOnTrial(user: User): boolean {
-  if (user.accountType !== 'establishment') return false;
-  if (user.estVipTier && user.estVipTier !== 'free' && user.estVipTier !== 'trial') {
-    return false;
+// BUSCA A TAXA CONFIGURADA DINAMICAMENTE NO PAINEL ADMIN
+export function getIntermediationFeePercent(
+  user: User,
+  estPlans?: EstVipPlan[],
+  vipPlans?: VipPlan[],
+  defaultFeePercent: number = 15
+): number {
+  if (!user || user.accountType !== 'establishment') return defaultFeePercent;
+
+  // 1. Isenção total durante o período de teste grátis (Trial)
+  if (isEstablishmentOnTrial(user)) {
+    const trialPlan = estPlans?.find((p) => String(p.tier).toLowerCase() === 'trial');
+    if (trialPlan) {
+      const fee = trialPlan.feePercent ?? (trialPlan as any).intermediationFee;
+      if (typeof fee === 'number') return fee;
+    }
+    return 0;
   }
-  return !!user.trialEndsAt && new Date(user.trialEndsAt) > new Date();
+
+  // 2. Trava direta de segurança para VIP 6 / Isento
+  const userTier = (user.estVipTier || user.vipTier || 'free').toString().toLowerCase();
+  if (userTier === 'vip6' || userTier.includes('isento')) return 0;
+
+  // 3. Busca no cadastro de planos do Estabelecimento no Admin
+  if (estPlans && estPlans.length > 0) {
+    const matchingEstPlan = estPlans.find(
+      (p) => String(p.tier).toLowerCase() === userTier || String(p.id).toLowerCase() === userTier
+    );
+    if (matchingEstPlan) {
+      const fee = matchingEstPlan.feePercent ?? (matchingEstPlan as any).intermediationFee;
+      if (typeof fee === 'number') return fee;
+    }
+  }
+
+  // 4. Busca no cadastro geral de planos VIP do Admin
+  if (vipPlans && vipPlans.length > 0) {
+    const matchingVipPlan = vipPlans.find(
+      (p) => String(p.tier).toLowerCase() === userTier || String(p.id).toLowerCase() === userTier
+    );
+    if (matchingVipPlan) {
+      const fee = matchingVipPlan.feePercent ?? (matchingVipPlan as any).intermediationFee;
+      if (typeof fee === 'number') return fee;
+    }
+  }
+
+  // 5. Fallback para getEstPlan se existir em mock
+  const plan = getEstPlan(user.estVipTier ?? 'free', estPlans);
+  if (plan) {
+    const fee = plan.feePercent ?? (plan as any).intermediationFee;
+    if (typeof fee === 'number') return fee;
+  }
+
+  return defaultFeePercent;
 }
 
 export function trialDaysLeft(user: User): number {
