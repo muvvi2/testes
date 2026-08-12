@@ -220,7 +220,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => { cancelled = true; };
   }, []);
 
-  // 2. Realtime Listener Global com Smart Merge (Preserva dados na tela)
+  // 2. Realtime Listener Global com Smart Merge para Candidaturas e Vagas
   useEffect(() => {
     const channel = supabase
       .channel('realtime-global-updates')
@@ -234,6 +234,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
               const item = mapJob(payload.new, prev.users);
               const existing = prev.jobs.find((j) => j.id === item.id);
               if (existing) {
+                // Mescla candidatos garantindo sem duplicados
+                const mergedApplicants = Array.from(
+                  new Set([...(existing.applicants || []), ...(item.applicants || [])])
+                );
+
                 const merged: Job = {
                   ...existing,
                   ...item,
@@ -242,7 +247,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
                   city: item.city || existing.city,
                   state: item.state || existing.state,
                   neighborhood: item.neighborhood || existing.neighborhood,
-                  applicants: Array.isArray(item.applicants) && item.applicants.length > 0 ? item.applicants : existing.applicants,
+                  applicants: mergedApplicants,
                 };
                 return { ...prev, jobs: prev.jobs.map((j) => (j.id === item.id ? merged : j)) };
               }
@@ -251,6 +256,31 @@ export function AppProvider({ children }: { children: ReactNode }) {
           } else if (payload.eventType === 'DELETE') {
             const deletedId = payload.old?.id;
             if (deletedId) setDataState((prev) => ({ ...prev, jobs: prev.jobs.filter((j) => j.id !== deletedId) }));
+          }
+        }
+      )
+      // --- CANDIDATURAS (JOB_APPLICANTS / CANDIDATOS) ---
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'job_applicants' },
+        (payload) => {
+          if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
+            const raw = payload.new;
+            const jobId = raw.job_id ?? raw.jobId;
+            const freelancerId = raw.freelancer_id ?? raw.freelancerId;
+
+            if (jobId && freelancerId) {
+              setDataState((prev) => ({
+                ...prev,
+                jobs: prev.jobs.map((j) => {
+                  if (j.id === jobId) {
+                    const applicants = Array.from(new Set([...(j.applicants || []), freelancerId]));
+                    return { ...j, applicants };
+                  }
+                  return j;
+                })
+              }));
+            }
           }
         }
       )
@@ -617,7 +647,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [setData, data]);
 
   const applyToJob = useCallback((jobId: string, freelancerId: string) => {
-    setData((d) => ({ ...d, jobs: d.jobs.map((j) => (j.id === jobId && !j.applicants.includes(freelancerId) ? { ...j, applicants: [...j.applicants, freelancerId] } : j)) }));
+    setData((d) => ({
+      ...d,
+      jobs: d.jobs.map((j) => {
+        if (j.id === jobId && !j.applicants.includes(freelancerId)) {
+          return { ...j, applicants: [...j.applicants, freelancerId] };
+        }
+        return j;
+      })
+    }));
     void dbApplyToJob(jobId, freelancerId).catch(() => {});
   }, [setData]);
 
