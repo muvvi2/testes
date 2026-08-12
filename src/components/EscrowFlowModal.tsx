@@ -38,7 +38,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [adminTab, setAdminTab] = useState('overview');
   const [adminMode, setAdminMode] = useState(true);
 
-  // 1. Carregamento Inicial do Banco
+  // 1. Carregamento Inicial
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -49,15 +49,70 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
       } catch (e) { 
         console.warn("⚠️ Falha ao carregar do Supabase:", e); 
-      } opacity: { if (!cancelled) setLoaded(true); }
+      } finally { 
+        if (!cancelled) setLoaded(true); 
+      }
     })();
     return () => { cancelled = true; };
   }, []);
 
-  // 2. Realtime Listener para Atualização Instantânea (Sem F5)
+  // 2. Listener do Supabase Realtime Global (Vagas, Perfis, Contratos, Notificações e Avaliações)
   useEffect(() => {
     const channel = supabase
-      .channel('realtime-app-updates')
+      .channel('realtime-global-updates')
+      // VAGAS (Jobs)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'jobs' },
+        (payload) => {
+          if (payload.eventType === 'INSERT') {
+            const newJob = payload.new as Job;
+            setDataState((prev) => {
+              if (prev.jobs.some((j) => j.id === newJob.id)) return prev;
+              return { ...prev, jobs: [newJob, ...prev.jobs] };
+            });
+          } else if (payload.eventType === 'UPDATE') {
+            const updatedJob = payload.new as Job;
+            setDataState((prev) => ({
+              ...prev,
+              jobs: prev.jobs.map((j) => (j.id === updatedJob.id ? { ...j, ...updatedJob } : j)),
+            }));
+          } else if (payload.eventType === 'DELETE') {
+            const deletedId = payload.old.id;
+            setDataState((prev) => ({
+              ...prev,
+              jobs: prev.jobs.filter((j) => j.id !== deletedId),
+            }));
+          }
+        }
+      )
+      // USUÁRIOS (Freelancers / Estabelecimentos)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'users' },
+        (payload) => {
+          if (payload.eventType === 'INSERT') {
+            const newUser = payload.new as User;
+            setDataState((prev) => {
+              if (prev.users.some((u) => u.id === newUser.id)) return prev;
+              return { ...prev, users: [...prev.users, newUser] };
+            });
+          } else if (payload.eventType === 'UPDATE') {
+            const updatedUser = payload.new as User;
+            setDataState((prev) => ({
+              ...prev,
+              users: prev.users.map((u) => (u.id === updatedUser.id ? { ...u, ...updatedUser } : u)),
+            }));
+          } else if (payload.eventType === 'DELETE') {
+            const deletedId = payload.old.id;
+            setDataState((prev) => ({
+              ...prev,
+              users: prev.users.filter((u) => u.id !== deletedId),
+            }));
+          }
+        }
+      )
+      // CONTRATOS
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'contracts' },
@@ -83,6 +138,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           }
         }
       )
+      // NOTIFICAÇÕES
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'notifications' },
@@ -92,6 +148,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
             setDataState((prev) => {
               if (prev.notifications.some((n) => n.id === newNotif.id)) return prev;
               return { ...prev, notifications: [newNotif, ...prev.notifications] };
+            });
+          }
+        }
+      )
+      // AVALIAÇÕES (Reviews)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'reviews' },
+        (payload) => {
+          if (payload.eventType === 'INSERT') {
+            const newReview = payload.new as Review;
+            setDataState((prev) => {
+              if (prev.reviews.some((r) => r.id === newReview.id)) return prev;
+              return { ...prev, reviews: [newReview, ...prev.reviews] };
             });
           }
         }
