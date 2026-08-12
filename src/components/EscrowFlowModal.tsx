@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import {
   Send, Check, Lock, Shield, Wallet, MapPin, MessageCircle, Star, Loader2,
-  ArrowRight, DollarSign, Phone, Download, Clock,
+  ArrowRight, DollarSign, Phone, Download, Clock, Copy
 } from 'lucide-react';
 import { useApp } from '@/AppContext';
 import { useToast } from './ui/Toast';
@@ -57,8 +57,14 @@ export function EscrowFlowModal({ contract, open, onClose }: { contract: Contrac
 
     setProcessing(true);
     try {
-      const result = await paymentService.createPaymentWithSplit({
+      const rawDocument = estUser?.cnpj || estUser?.cpf || estUser?.cpfCnpj || '';
+      const cleanDocument = rawDocument.replace(/\D/g, '');
+
+      const result: any = await paymentService.createPaymentWithSplit({
         customer: contract.establishmentId,
+        customerName: estUser?.name || contract.establishmentName || 'Cliente',
+        customerEmail: estUser?.email || 'cliente@freelaagora.com',
+        customerCpfCnpj: cleanDocument || undefined,
         billingType: payMethod === 'pix' ? 'PIX' : 'CREDIT_CARD',
         value: contract.total,
         dueDate: new Date().toISOString().slice(0, 10),
@@ -68,19 +74,31 @@ export function EscrowFlowModal({ contract, open, onClose }: { contract: Contrac
       });
 
       if (payMethod === 'pix') {
-        if (!result.pixQrCode) throw new Error('O gateway não retornou um QR Code PIX.');
-        setPixQrCode(result.pixQrCode);
-        setPixPayload(result.pixQrCode);
+        const qrCodeBase64 = result.pixQrCode || result.encodedImage || result.pix?.encodedImage || result.pixQrCodeUrl;
+        const copyPaste = result.pixCopyPaste || result.payload || result.pix?.payload;
+
+        if (!qrCodeBase64 && !copyPaste) {
+          throw new Error('O gateway não retornou um QR Code PIX.');
+        }
+
+        const formattedQrCode = qrCodeBase64 
+          ? (qrCodeBase64.startsWith('data:') || qrCodeBase64.startsWith('http') ? qrCodeBase64 : `data:image/png;base64,${qrCodeBase64}`)
+          : null;
+
+        setPixQrCode(formattedQrCode);
+        setPixPayload(copyPaste || formattedQrCode);
         setPaymentStage('pix');
         notify('QR Code PIX gerado. O contrato será liberado após a confirmação do pagamento.');
       } else {
-        if (!result.invoiceUrl) throw new Error('O gateway não retornou um checkout para cartão.');
-        setCheckoutUrl(result.invoiceUrl);
+        const redirectUrl = result.invoiceUrl || result.bankSlipUrl || result.paymentUrl;
+        if (!redirectUrl) throw new Error('O gateway não retornou um checkout para cartão.');
+        setCheckoutUrl(redirectUrl);
         setPaymentStage('card');
         notify('Checkout seguro criado. Conclua o pagamento na nova página.');
       }
-    } catch {
-      notify('Não foi possível iniciar este pagamento. O provedor de pagamentos ainda não está disponível.', 'error');
+    } catch (err: any) {
+      console.error("Erro no pagamento:", err);
+      notify(err.message || 'Não foi possível iniciar este pagamento. O provedor de pagamentos ainda não está disponível.', 'error');
     } finally {
       setProcessing(false);
     }
@@ -235,28 +253,32 @@ export function EscrowFlowModal({ contract, open, onClose }: { contract: Contrac
                 {processing ? <><Loader2 className="h-5 w-5 animate-spin" /> Processando...</> : <><Lock className="h-5 w-5" /> {payMethod === 'wallet' ? `Pagar ${formatCurrency(contract.total)} em Garantia` : `Gerar pagamento de ${formatCurrency(contract.total)}`}</>}
               </Button>
 
-              {paymentStage === 'pix' && pixQrCode && (
+              {paymentStage === 'pix' && (pixQrCode || pixPayload) && (
                 <div className="space-y-3 rounded-xl border border-success-200 bg-success-50 p-4 dark:border-success-500/30 dark:bg-success-500/10">
                   <div>
                     <p className="font-semibold text-success-800 dark:text-success-300">PIX aguardando pagamento</p>
                     <p className="mt-1 text-xs text-success-700 dark:text-success-400">Escaneie o QR Code ou copie o código. O contato só será liberado após a confirmação.</p>
                   </div>
-                  {pixQrCode.startsWith('data:image/') ? (
-                    <img src={pixQrCode} alt="QR Code PIX" className="mx-auto h-48 w-48 rounded-lg bg-white p-2" />
+                  {pixQrCode ? (
+                    <img src={pixQrCode} alt="QR Code PIX" className="mx-auto h-48 w-48 rounded-lg bg-white p-2 border border-neutral-200" />
                   ) : (
                     <div className="rounded-lg border border-dashed border-success-300 bg-white p-3 text-center text-xs text-neutral-600">O provedor retornou o código PIX. Copie o código abaixo para pagar.</div>
                   )}
-                  <div className="flex gap-2">
-                    <input readOnly value={pixPayload ?? ''} className="min-w-0 flex-1 rounded-lg border border-success-200 bg-white px-3 py-2 text-xs text-neutral-700" aria-label="Código PIX" />
-                    <Button size="sm" variant="outline" onClick={() => { if (pixPayload) void navigator.clipboard.writeText(pixPayload); notify('Código PIX copiado.'); }}>Copiar</Button>
-                  </div>
+                  {pixPayload && (
+                    <div className="flex gap-2">
+                      <input readOnly value={pixPayload} className="min-w-0 flex-1 rounded-lg border border-success-200 bg-white px-3 py-2 text-xs text-neutral-700" aria-label="Código PIX" />
+                      <Button size="sm" variant="outline" onClick={() => { if (pixPayload) void navigator.clipboard.writeText(pixPayload); notify('Código PIX copiado.'); }}>
+                        <Copy className="h-3.5 w-3.5 mr-1" /> Copiar
+                      </Button>
+                    </div>
+                  )}
                 </div>
               )}
 
               {paymentStage === 'card' && checkoutUrl && (
                 <div className="space-y-3 rounded-xl border border-secondary-200 bg-secondary-50 p-4 dark:border-secondary-500/30 dark:bg-secondary-500/10">
                   <p className="font-semibold text-secondary-800 dark:text-secondary-300">Checkout seguro do cartão</p>
-                  <p className="text-xs text-secondary-700 dark:text-secondary-400">Os dados do cartão serão preenchidos diretamente no provedor. Este contrato continua aguardando até o pagamento ser confirmed.</p>
+                  <p className="text-xs text-secondary-700 dark:text-secondary-400">Os dados do cartão serão preenchidos diretamente no provedor. Este contrato continua aguardando até o pagamento ser confirmado.</p>
                   <a href={checkoutUrl} target="_blank" rel="noreferrer" className="inline-flex w-full items-center justify-center rounded-lg bg-secondary-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-secondary-700">Abrir checkout do cartão</a>
                 </div>
               )}
