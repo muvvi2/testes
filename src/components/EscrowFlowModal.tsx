@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, type ReactNode } from 'react';
 import { AppContext, type AppContextValue, useApp } from './context';
 import { initialData, CATEGORIES, metroNearby, emptyAvailability } from './mockData';
-import { uid, getPlan, canSelectCategories, getEstPlan, getIntermediationFeePercent, calculateFees } from './utils';
+import { uid, getPlan, canSelectCategories, getEstPlan, getIntermediationFeePercent, calculateFees, emptyAddress } from './utils';
 import { setPaymentSettings } from '@/services/paymentService';
 import { supabase } from '@/lib/supabase';
 import type { AppData, User, Job, Contract, WalletTx, AppNotification, Review, Tier, Period, WeekAvailability, DateAvailability, ContractStatus, EstTier, TermsAcceptance, Coupon, VipPlan, EstVipPlan, PaymentSettings } from './types';
@@ -23,89 +23,141 @@ export { useApp };
 const ADMIN_ID = '00000000-0000-0000-0000-000000000001';
 const STORAGE_KEY = 'freelaagora_current_user';
 
-// Mapeadores para converter campos do Supabase (snake_case) para o React (camelCase)
-const mapJob = (raw: any): Job => ({
-  id: raw.id,
-  establishmentId: raw.establishment_id ?? raw.establishmentId ?? '',
-  establishmentName: raw.establishment_name ?? raw.establishmentName ?? '',
-  establishmentPhoto: raw.establishment_photo ?? raw.establishmentPhoto ?? '',
-  title: raw.title ?? '',
-  description: raw.description ?? '',
-  category: raw.category ?? '',
-  macroCategory: raw.macro_category ?? raw.macroCategory ?? '',
-  date: raw.date ?? '',
-  shift: raw.shift ?? 'manha',
-  hours: Number(raw.hours ?? 8),
-  hourlyRate: Number(raw.hourly_rate ?? raw.hourlyRate ?? 0),
-  dailyRate: Number(raw.daily_rate ?? raw.dailyRate ?? 0),
-  value: Number(raw.value ?? 0),
-  city: raw.city ?? '',
-  state: raw.state ?? '',
-  neighborhood: raw.neighborhood ?? '',
-  urgency: raw.urgency ?? 'esta_semana',
-  status: raw.status ?? 'active',
-  applicants: Array.isArray(raw.applicants) ? raw.applicants : [],
-  createdAt: raw.created_at ?? raw.createdAt ?? new Date().toISOString(),
-});
+// --- MAPEADORES ULTRA-SEGUROS SNOKE_CASE <-> CAMELCASE ---
+const mapJob = (raw: any, existingUsers: User[] = []): Job => {
+  const estId = raw.establishment_id ?? raw.establishmentId ?? '';
+  const est = existingUsers.find((u) => u.id === estId);
 
-const mapContract = (raw: any): Contract => ({
-  id: raw.id,
-  jobId: raw.job_id ?? raw.jobId ?? null,
-  establishmentId: raw.establishment_id ?? raw.establishmentId ?? '',
-  establishmentName: raw.establishment_name ?? raw.establishmentName ?? '',
-  freelancerId: raw.freelancer_id ?? raw.freelancerId ?? '',
-  freelancerName: raw.freelancer_name ?? raw.freelancerName ?? '',
-  freelancerPhoto: raw.freelancer_photo ?? raw.freelancerPhoto ?? '',
-  freelancerPhone: raw.freelancer_phone ?? raw.freelancerPhone ?? '',
-  freelancerWhatsapp: raw.freelancer_whatsapp ?? raw.freelancerWhatsapp ?? '',
-  category: raw.category ?? 'geral',
-  date: raw.date ?? new Date().toISOString(),
-  hours: Number(raw.hours ?? 8),
-  freelancerFee: Number(raw.freelancer_fee ?? raw.freelancerFee ?? 0),
-  platformFeePercentage: Number(raw.platform_fee_percentage ?? raw.platformFeePercentage ?? 15),
-  platformFee: Number(raw.platform_fee ?? raw.platformFee ?? 0),
-  total: Number(raw.total ?? 0),
-  status: raw.status ?? 'requested',
-  coraInvoiceId: raw.cora_invoice_id ?? raw.coraInvoiceId ?? undefined,
-  createdAt: raw.created_at ?? raw.createdAt ?? new Date().toISOString(),
-  history: Array.isArray(raw.history) ? raw.history : [{ status: raw.status ?? 'requested', at: new Date().toISOString() }],
-});
+  let applicants: string[] = [];
+  if (Array.isArray(raw.applicants)) {
+    applicants = raw.applicants;
+  } else if (typeof raw.applicants === 'string') {
+    try {
+      const parsed = JSON.parse(raw.applicants);
+      if (Array.isArray(parsed)) applicants = parsed;
+    } catch (e) {
+      applicants = [];
+    }
+  }
 
-const mapUser = (raw: any): User => ({
-  id: raw.id,
-  name: raw.name ?? '',
-  email: raw.email ?? '',
-  password: raw.password ?? raw.password_hash ?? '',
-  accountType: raw.account_type ?? raw.accountType ?? 'freelancer',
-  phone: raw.phone ?? '',
-  whatsapp: raw.whatsapp ?? '',
-  cpf: raw.cpf ?? '',
-  cnpj: raw.cnpj ?? '',
-  cpfCnpj: raw.cpf_cnpj ?? raw.cpfCnpj ?? '',
-  bio: raw.bio ?? '',
-  photo: raw.photo ?? '',
-  nickname: raw.nickname ?? '',
-  address: raw.address ?? emptyAvailability(),
-  rating: Number(raw.rating ?? 5),
-  reviewsCount: Number(raw.reviews_count ?? raw.reviewsCount ?? 0),
-  completedShifts: Number(raw.completed_shifts ?? raw.completedShifts ?? 0),
-  walletBalance: Number(raw.wallet_balance ?? raw.walletBalance ?? 0),
-  vipTier: raw.vip_tier ?? raw.vipTier ?? 'free',
-  estVipTier: raw.est_vip_tier ?? raw.estVipTier ?? 'free',
-  trialEndsAt: raw.trial_ends_at ?? raw.trialEndsAt ?? null,
-  categories: Array.isArray(raw.categories) ? raw.categories : [],
-  availability: raw.availability ?? emptyAvailability(),
-  dateAvailability: raw.date_availability ?? raw.dateAvailability ?? {},
-  hourlyRate: Number(raw.hourly_rate ?? raw.hourlyRate ?? 0),
-  dailyRate: Number(raw.daily_rate ?? raw.dailyRate ?? 0),
-  unlimitedKm: Boolean(raw.unlimited_km ?? raw.unlimitedKm ?? false),
-  banned: Boolean(raw.banned ?? false),
-  isAdmin: Boolean(raw.is_admin ?? raw.isAdmin ?? false),
-  createdAt: raw.created_at ?? raw.createdAt ?? new Date().toISOString(),
-} as User);
+  return {
+    id: String(raw.id ?? ''),
+    establishmentId: estId,
+    establishmentName: raw.establishment_name ?? raw.establishmentName ?? est?.name ?? '',
+    establishmentPhoto: raw.establishment_photo ?? raw.establishmentPhoto ?? est?.photo ?? '',
+    title: raw.title ?? '',
+    description: raw.description ?? '',
+    category: raw.category ?? 'geral',
+    macroCategory: raw.macro_category ?? raw.macroCategory ?? '',
+    date: raw.date ?? new Date().toISOString(),
+    shift: raw.shift ?? 'manha',
+    hours: Number(raw.hours ?? 8),
+    hourlyRate: Number(raw.hourly_rate ?? raw.hourlyRate ?? 0),
+    dailyRate: Number(raw.daily_rate ?? raw.dailyRate ?? 0),
+    value: Number(raw.value ?? 0),
+    city: raw.city ?? est?.address?.city ?? '',
+    state: raw.state ?? est?.address?.state ?? 'SP',
+    neighborhood: raw.neighborhood ?? est?.address?.neighborhood ?? '',
+    urgency: raw.urgency ?? 'esta_semana',
+    status: raw.status ?? 'active',
+    applicants,
+    createdAt: raw.created_at ?? raw.createdAt ?? new Date().toISOString(),
+  };
+};
+
+const mapContract = (raw: any, existingUsers: User[] = []): Contract => {
+  const estId = raw.establishment_id ?? raw.establishmentId ?? '';
+  const flId = raw.freelancer_id ?? raw.freelancerId ?? '';
+  const est = existingUsers.find((u) => u.id === estId);
+  const fl = existingUsers.find((u) => u.id === flId);
+
+  let history = [];
+  if (Array.isArray(raw.history)) {
+    history = raw.history;
+  } else if (typeof raw.history === 'string') {
+    try {
+      const parsed = JSON.parse(raw.history);
+      if (Array.isArray(parsed)) history = parsed;
+    } catch (e) {
+      history = [];
+    }
+  }
+
+  return {
+    id: String(raw.id ?? ''),
+    jobId: raw.job_id ?? raw.jobId ?? null,
+    establishmentId: estId,
+    establishmentName: raw.establishment_name ?? raw.establishmentName ?? est?.name ?? '',
+    freelancerId: flId,
+    freelancerName: raw.freelancer_name ?? raw.freelancerName ?? fl?.name ?? '',
+    freelancerPhoto: raw.freelancer_photo ?? raw.freelancerPhoto ?? fl?.photo ?? '',
+    freelancerPhone: raw.freelancer_phone ?? raw.freelancerPhone ?? fl?.phone ?? '',
+    freelancerWhatsapp: raw.freelancer_whatsapp ?? raw.freelancerWhatsapp ?? fl?.whatsapp ?? '',
+    category: raw.category ?? 'geral',
+    date: raw.date ?? new Date().toISOString(),
+    hours: Number(raw.hours ?? 8),
+    freelancerFee: Number(raw.freelancer_fee ?? raw.freelancerFee ?? 0),
+    platformFeePercentage: Number(raw.platform_fee_percentage ?? raw.platformFeePercentage ?? 15),
+    platformFee: Number(raw.platform_fee ?? raw.platformFee ?? 0),
+    total: Number(raw.total ?? 0),
+    status: raw.status ?? 'requested',
+    coraInvoiceId: raw.cora_invoice_id ?? raw.coraInvoiceId ?? undefined,
+    createdAt: raw.created_at ?? raw.createdAt ?? new Date().toISOString(),
+    history,
+  };
+};
+
+const mapUser = (raw: any): User => {
+  let categories: string[] = [];
+  if (Array.isArray(raw.categories)) {
+    categories = raw.categories;
+  } else if (typeof raw.categories === 'string') {
+    try {
+      const parsed = JSON.parse(raw.categories);
+      if (Array.isArray(parsed)) categories = parsed;
+    } catch (e) {
+      categories = [];
+    }
+  }
+
+  const estVipTierValue = raw.est_vip_tier ?? raw.estVipTier ?? 'free';
+
+  return {
+    id: String(raw.id ?? ''),
+    name: raw.name ?? '',
+    email: raw.email ?? '',
+    password: raw.password ?? raw.password_hash ?? '',
+    accountType: raw.account_type ?? raw.accountType ?? 'freelancer',
+    phone: raw.phone ?? '',
+    whatsapp: raw.whatsapp ?? '',
+    cpf: raw.cpf ?? '',
+    cnpj: raw.cnpj ?? '',
+    cpfCnpj: raw.cpf_cnpj ?? raw.cpfCnpj ?? '',
+    bio: raw.bio ?? '',
+    photo: raw.photo ?? '',
+    nickname: raw.nickname ?? '',
+    address: typeof raw.address === 'object' && raw.address !== null ? raw.address : emptyAddress(),
+    rating: Number(raw.rating ?? 5),
+    reviewsCount: Number(raw.reviews_count ?? raw.reviewsCount ?? 0),
+    completedShifts: Number(raw.completed_shifts ?? raw.completedShifts ?? 0),
+    walletBalance: Number(raw.wallet_balance ?? raw.walletBalance ?? 0),
+    vipTier: raw.vip_tier ?? raw.vipTier ?? 'free',
+    estVipTier: estVipTierValue,
+    trialEndsAt: raw.trial_ends_at ?? raw.trialEndsAt ?? null,
+    categories,
+    availability: typeof raw.availability === 'object' && raw.availability !== null ? raw.availability : emptyAvailability(),
+    dateAvailability: typeof raw.date_availability === 'object' && raw.date_availability !== null ? raw.date_availability : (typeof raw.dateAvailability === 'object' && raw.dateAvailability !== null ? raw.dateAvailability : {}),
+    hourlyRate: Number(raw.hourly_rate ?? raw.hourlyRate ?? 0),
+    dailyRate: Number(raw.daily_rate ?? raw.dailyRate ?? 0),
+    unlimitedKm: Boolean(raw.unlimited_km ?? raw.unlimitedKm ?? false),
+    banned: Boolean(raw.banned ?? false),
+    isAdmin: Boolean(raw.is_admin ?? raw.isAdmin ?? false),
+    createdAt: raw.created_at ?? raw.createdAt ?? new Date().toISOString(),
+  } as User;
+};
 
 const mapNotification = (raw: any): AppNotification => ({
-  id: raw.id,
+  id: String(raw.id ?? ''),
   userId: raw.user_id ?? raw.userId ?? '',
   type: raw.type ?? 'announcement',
   title: raw.title ?? '',
@@ -116,7 +168,7 @@ const mapNotification = (raw: any): AppNotification => ({
 });
 
 const mapReview = (raw: any): Review => ({
-  id: raw.id,
+  id: String(raw.id ?? ''),
   fromId: raw.from_id ?? raw.fromId ?? '',
   fromName: raw.from_name ?? raw.fromName ?? '',
   toId: raw.to_id ?? raw.toId ?? '',
@@ -126,7 +178,7 @@ const mapReview = (raw: any): Review => ({
 });
 
 const mapWalletTx = (raw: any): WalletTx => ({
-  id: raw.id,
+  id: String(raw.id ?? ''),
   userId: raw.user_id ?? raw.userId ?? '',
   type: raw.type ?? 'deposit',
   amount: Number(raw.amount ?? 0),
@@ -150,7 +202,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [adminTab, setAdminTab] = useState('overview');
   const [adminMode, setAdminMode] = useState(true);
 
-  // 1. Carga Inicial dos Dados do Banco
+  // 1. Carga Inicial dos Dados
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -168,7 +220,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => { cancelled = true; };
   }, []);
 
-  // 2. Realtime Listener Global (Com mapeamento completo snake_case -> camelCase)
+  // 2. Realtime Listener Global com Smart Merge (Preserva dados na tela)
   useEffect(() => {
     const channel = supabase
       .channel('realtime-global-updates')
@@ -177,15 +229,28 @@ export function AppProvider({ children }: { children: ReactNode }) {
         'postgres_changes',
         { event: '*', schema: 'public', table: 'jobs' },
         (payload) => {
-          if (payload.eventType === 'INSERT') {
-            const item = mapJob(payload.new);
-            setDataState((prev) => (prev.jobs.some((j) => j.id === item.id) ? prev : { ...prev, jobs: [item, ...prev.jobs] }));
-          } else if (payload.eventType === 'UPDATE') {
-            const item = mapJob(payload.new);
-            setDataState((prev) => ({ ...prev, jobs: prev.jobs.map((j) => (j.id === item.id ? { ...j, ...item } : j)) }));
+          if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
+            setDataState((prev) => {
+              const item = mapJob(payload.new, prev.users);
+              const existing = prev.jobs.find((j) => j.id === item.id);
+              if (existing) {
+                const merged: Job = {
+                  ...existing,
+                  ...item,
+                  establishmentName: item.establishmentName || existing.establishmentName,
+                  establishmentPhoto: item.establishmentPhoto || existing.establishmentPhoto,
+                  city: item.city || existing.city,
+                  state: item.state || existing.state,
+                  neighborhood: item.neighborhood || existing.neighborhood,
+                  applicants: Array.isArray(item.applicants) && item.applicants.length > 0 ? item.applicants : existing.applicants,
+                };
+                return { ...prev, jobs: prev.jobs.map((j) => (j.id === item.id ? merged : j)) };
+              }
+              return { ...prev, jobs: [item, ...prev.jobs] };
+            });
           } else if (payload.eventType === 'DELETE') {
-            const deletedId = payload.old.id;
-            setDataState((prev) => ({ ...prev, jobs: prev.jobs.filter((j) => j.id !== deletedId) }));
+            const deletedId = payload.old?.id;
+            if (deletedId) setDataState((prev) => ({ ...prev, jobs: prev.jobs.filter((j) => j.id !== deletedId) }));
           }
         }
       )
@@ -194,15 +259,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
         'postgres_changes',
         { event: '*', schema: 'public', table: 'users' },
         (payload) => {
-          if (payload.eventType === 'INSERT') {
-            const item = mapUser(payload.new);
-            setDataState((prev) => (prev.users.some((u) => u.id === item.id) ? prev : { ...prev, users: [...prev.users, item] }));
-          } else if (payload.eventType === 'UPDATE') {
-            const item = mapUser(payload.new);
-            setDataState((prev) => ({ ...prev, users: prev.users.map((u) => (u.id === item.id ? { ...u, ...item } : u)) }));
+          if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
+            setDataState((prev) => {
+              const item = mapUser(payload.new);
+              const existing = prev.users.find((u) => u.id === item.id);
+              if (existing) {
+                const merged: User = {
+                  ...existing,
+                  ...item,
+                  name: item.name || existing.name,
+                  email: item.email || existing.email,
+                  estVipTier: item.estVipTier !== 'free' ? item.estVipTier : (existing.estVipTier || 'free'),
+                  vipTier: item.vipTier !== 'free' ? item.vipTier : (existing.vipTier || 'free'),
+                  walletBalance: !isNaN(item.walletBalance) ? item.walletBalance : existing.walletBalance,
+                };
+                return { ...prev, users: prev.users.map((u) => (u.id === item.id ? merged : u)) };
+              }
+              return { ...prev, users: [...prev.users, item] };
+            });
           } else if (payload.eventType === 'DELETE') {
-            const deletedId = payload.old.id;
-            setDataState((prev) => ({ ...prev, users: prev.users.filter((u) => u.id !== deletedId) }));
+            const deletedId = payload.old?.id;
+            if (deletedId) setDataState((prev) => ({ ...prev, users: prev.users.filter((u) => u.id !== deletedId) }));
           }
         }
       )
@@ -211,15 +288,37 @@ export function AppProvider({ children }: { children: ReactNode }) {
         'postgres_changes',
         { event: '*', schema: 'public', table: 'contracts' },
         (payload) => {
-          if (payload.eventType === 'INSERT') {
-            const item = mapContract(payload.new);
-            setDataState((prev) => (prev.contracts.some((c) => c.id === item.id) ? prev : { ...prev, contracts: [item, ...prev.contracts] }));
-          } else if (payload.eventType === 'UPDATE') {
-            const item = mapContract(payload.new);
-            setDataState((prev) => ({ ...prev, contracts: prev.contracts.map((c) => (c.id === item.id ? { ...c, ...item } : c)) }));
+          if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
+            setDataState((prev) => {
+              const item = mapContract(payload.new, prev.users);
+              const existing = prev.contracts.find((c) => c.id === item.id);
+              if (existing) {
+                const mergedHistory = (Array.isArray(item.history) && item.history.length >= (existing.history?.length || 0))
+                  ? item.history
+                  : (existing.history || item.history);
+
+                const merged: Contract = {
+                  ...existing,
+                  ...item,
+                  establishmentName: item.establishmentName || existing.establishmentName,
+                  establishmentPhoto: item.establishmentPhoto || existing.establishmentPhoto,
+                  freelancerName: item.freelancerName || existing.freelancerName,
+                  freelancerPhoto: item.freelancerPhoto || existing.freelancerPhoto,
+                  freelancerPhone: item.freelancerPhone || existing.freelancerPhone,
+                  freelancerWhatsapp: item.freelancerWhatsapp || existing.freelancerWhatsapp,
+                  freelancerFee: item.freelancerFee > 0 ? item.freelancerFee : existing.freelancerFee,
+                  platformFeePercentage: (payload.new.platform_fee_percentage !== undefined && payload.new.platform_fee_percentage !== null) ? Number(payload.new.platform_fee_percentage) : existing.platformFeePercentage,
+                  platformFee: (payload.new.platform_fee !== undefined && payload.new.platform_fee !== null) ? Number(payload.new.platform_fee) : existing.platformFee,
+                  total: item.total > 0 ? item.total : existing.total,
+                  history: mergedHistory,
+                };
+                return { ...prev, contracts: prev.contracts.map((c) => (c.id === item.id ? merged : c)) };
+              }
+              return { ...prev, contracts: [item, ...prev.contracts] };
+            });
           } else if (payload.eventType === 'DELETE') {
-            const deletedId = payload.old.id;
-            setDataState((prev) => ({ ...prev, contracts: prev.contracts.filter((c) => c.id !== deletedId) }));
+            const deletedId = payload.old?.id;
+            if (deletedId) setDataState((prev) => ({ ...prev, contracts: prev.contracts.filter((c) => c.id !== deletedId) }));
           }
         }
       )
@@ -228,15 +327,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
         'postgres_changes',
         { event: '*', schema: 'public', table: 'notifications' },
         (payload) => {
-          if (payload.eventType === 'INSERT') {
+          if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
             const item = mapNotification(payload.new);
-            setDataState((prev) => (prev.notifications.some((n) => n.id === item.id) ? prev : { ...prev, notifications: [item, ...prev.notifications] }));
-          } else if (payload.eventType === 'UPDATE') {
-            const item = mapNotification(payload.new);
-            setDataState((prev) => ({ ...prev, notifications: prev.notifications.map((n) => (n.id === item.id ? { ...n, ...item } : n)) }));
+            setDataState((prev) => (prev.notifications.some((n) => n.id === item.id) ? { ...prev, notifications: prev.notifications.map((n) => (n.id === item.id ? { ...n, ...item } : n)) } : { ...prev, notifications: [item, ...prev.notifications] }));
           } else if (payload.eventType === 'DELETE') {
-            const deletedId = payload.old.id;
-            setDataState((prev) => ({ ...prev, notifications: prev.notifications.filter((n) => n.id !== deletedId) }));
+            const deletedId = payload.old?.id;
+            if (deletedId) setDataState((prev) => ({ ...prev, notifications: prev.notifications.filter((n) => n.id !== deletedId) }));
           }
         }
       )
@@ -245,15 +341,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
         'postgres_changes',
         { event: '*', schema: 'public', table: 'reviews' },
         (payload) => {
-          if (payload.eventType === 'INSERT') {
+          if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
             const item = mapReview(payload.new);
-            setDataState((prev) => (prev.reviews.some((r) => r.id === item.id) ? prev : { ...prev, reviews: [item, ...prev.reviews] }));
-          } else if (payload.eventType === 'UPDATE') {
-            const item = mapReview(payload.new);
-            setDataState((prev) => ({ ...prev, reviews: prev.reviews.map((r) => (r.id === item.id ? { ...r, ...item } : r)) }));
+            setDataState((prev) => (prev.reviews.some((r) => r.id === item.id) ? { ...prev, reviews: prev.reviews.map((r) => (r.id === item.id ? { ...r, ...item } : r)) } : { ...prev, reviews: [item, ...prev.reviews] }));
           } else if (payload.eventType === 'DELETE') {
-            const deletedId = payload.old.id;
-            setDataState((prev) => ({ ...prev, reviews: prev.reviews.filter((r) => r.id !== deletedId) }));
+            const deletedId = payload.old?.id;
+            if (deletedId) setDataState((prev) => ({ ...prev, reviews: prev.reviews.filter((r) => r.id !== deletedId) }));
           }
         }
       )
@@ -262,15 +355,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
         'postgres_changes',
         { event: '*', schema: 'public', table: 'wallet_transactions' },
         (payload) => {
-          if (payload.eventType === 'INSERT') {
+          if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
             const item = mapWalletTx(payload.new);
-            setDataState((prev) => (prev.walletTxs.some((t) => t.id === item.id) ? prev : { ...prev, walletTxs: [item, ...prev.walletTxs] }));
-          } else if (payload.eventType === 'UPDATE') {
-            const item = mapWalletTx(payload.new);
-            setDataState((prev) => ({ ...prev, walletTxs: prev.walletTxs.map((t) => (t.id === item.id ? { ...t, ...item } : t)) }));
+            setDataState((prev) => (prev.walletTxs.some((t) => t.id === item.id) ? { ...prev, walletTxs: prev.walletTxs.map((t) => (t.id === item.id ? { ...t, ...item } : t)) } : { ...prev, walletTxs: [item, ...prev.walletTxs] }));
           } else if (payload.eventType === 'DELETE') {
-            const deletedId = payload.old.id;
-            setDataState((prev) => ({ ...prev, walletTxs: prev.walletTxs.filter((t) => t.id !== deletedId) }));
+            const deletedId = payload.old?.id;
+            if (deletedId) setDataState((prev) => ({ ...prev, walletTxs: prev.walletTxs.filter((t) => t.id !== deletedId) }));
           }
         }
       )
@@ -332,6 +422,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       trialEndsAt: user.accountType === 'establishment' ? new Date(Date.now() + 15 * 86400000).toISOString() : undefined,
       categories: user.accountType === 'freelancer' ? (user.categories ?? []) : undefined,
       availability: user.accountType === 'freelancer' ? (user.availability ?? emptyAvailability()) : undefined,
+      address: user.address ?? emptyAddress(),
     } as User;
     setData((d) => ({ ...d, users: [...d.users, newUser], currentUserId: id }));
     void dbInsertUser(newUser).catch(() => {});
@@ -389,7 +480,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       users: d.users.map((u) => (u.id === id ? { ...u, vipTier: tier, vipExpiresAt: expiry, walletBalance: Math.max(0, (u.walletBalance ?? 0) - price) } : u)),
       walletTxs: [...newTxs, ...d.walletTxs]
     }));
-    void dbUpdateUser(id, { vipTier: tier, vipExpiresAt: expiry }).catch(() => {});
+    void dbUpdateUser(id, { vipTier: tier, vipExpiresAt: expiry, estVipTier: user?.estVipTier }).catch(() => {});
     if (price > 0 && newTxs[0]) {
       void dbInsertWalletTx(newTxs[0]).catch(() => {});
       if (user) void dbUpdateWalletBalance(id, Math.max(0, (user.walletBalance ?? 0) - price)).catch(() => {});
@@ -407,12 +498,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const expiry = (tier === 'free' || tier === 'trial') ? undefined : new Date(Date.now() + (period === 'annual' ? 365 : period === 'semestral' ? 180 : 30) * 86400000).toISOString();
     const newTrialEndsAt = (tier !== 'free' && tier !== 'trial') ? null : user?.trialEndsAt;
     const newTxs: WalletTx[] = price > 0 ? [{ id: crypto.randomUUID(), userId: id, type: 'vip_charge_est', amount: -price, description: `Assinatura ${getEstPlan(tier, data.estVipPlans).label} (${period})`, date: new Date().toISOString() }] : [];
+    
     setData((d) => ({
       ...d,
       users: d.users.map((u) => (u.id === id ? { ...u, estVipTier: tier, estVipExpiresAt: expiry, trialEndsAt: newTrialEndsAt, walletBalance: Math.max(0, (u.walletBalance ?? 0) - price) } : u)),
       walletTxs: [...newTxs, ...d.walletTxs]
     }));
-    void dbUpdateUser(id, { estVipTier: tier, estVipExpiresAt: expiry, trialEndsAt: newTrialEndsAt }).catch(() => {});
+
+    void dbUpdateUser(id, { estVipTier: tier, est_vip_tier: tier, estVipExpiresAt: expiry, trialEndsAt: newTrialEndsAt } as any).catch(() => {});
+    
     if (price > 0 && newTxs[0]) {
       void dbInsertWalletTx(newTxs[0]).catch(() => {});
       if (user) void dbUpdateWalletBalance(id, Math.max(0, (user.walletBalance ?? 0) - price)).catch(() => {});
@@ -486,8 +580,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (!data) return { ok: false, error: 'Sistema carregando.' };
     const est = data.users.find((u) => u.id === j.establishmentId);
     if (!est) return { ok: false, error: 'Estabelecimento não encontrado.' };
-    setData((d) => ({ ...d, jobs: [j, ...d.jobs] }));
-    void dbInsertJob(j).catch(() => {});
+
+    const fullJob: Job = {
+      ...j,
+      establishmentName: j.establishmentName || est.name || 'Estabelecimento',
+      establishmentPhoto: j.establishmentPhoto || est.photo || '',
+      city: j.city || est.address?.city || '',
+      state: j.state || est.address?.state || 'SP',
+      neighborhood: j.neighborhood || est.address?.neighborhood || '',
+      applicants: Array.isArray(j.applicants) ? j.applicants : [],
+      status: j.status || 'active',
+      createdAt: j.createdAt || new Date().toISOString()
+    };
+
+    setData((d) => ({ ...d, jobs: [fullJob, ...d.jobs] }));
+    void dbInsertJob(fullJob).catch(() => {});
     return { ok: true };
   }, [data, setData]);
 
@@ -886,7 +993,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const nearbyFreelancers = useCallback((city: string) => {
     if (!data) return [];
     const nearby = metroNearby(city);
-    return data.users.filter((u) => u.accountType === 'freelancer' && !u.isAdmin && !u.banned && nearby.includes(u.address.city));
+    return data.users.filter((u) => u.accountType === 'freelancer' && !u.isAdmin && !u.banned && nearby.includes(u.address?.city ?? ''));
   }, [data?.users]);
   const categoryById = useCallback((id: string) => CATEGORIES.find((c) => c.id === id), []);
 
