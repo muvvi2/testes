@@ -1,79 +1,136 @@
 import { useState, useEffect } from 'react';
-import { useApp } from '@/AppContext';
+import { AppProvider, useApp } from './AppContext';
+import { ToastProvider } from './components/ui/Toast';
+import { Header } from './components/Header';
+import { LandingPage } from './components/LandingPage';
+import { ContractorView } from './components/ContractorView';
+import { FreelancerView } from './components/FreelancerView';
+import { AdminView } from './components/AdminView';
+import { TermsPage } from './components/TermsPage';
+import { VipPanel } from './components/VipPanel';
+import { VipSquareWidget } from './components/VipSquareWidget';
 
-export function VipSquareWidget({ pageType = 'freelancers', slot = 1 }: { pageType?: 'freelancers' | 'establishments'; slot: 1 | 2 | 3 }) {
-  const { data } = useApp();
-  const slotIndex = slot - 1; 
-  const activeAds: { imageUrl: string; linkUrl: string; title?: string }[] = [];
-  
-  data.users.forEach((u) => {
-    if (u.accountType === 'establishment' && u.estVipTier && u.estVipTier !== 'free') {
-      const isOnTrial = u.trialEndsAt ? new Date(u.trialEndsAt) > new Date() : false;
-      const currentTier = isOnTrial ? 'trial' : u.estVipTier;
-      const plan = data.estVipPlans.find((p) => p.tier === currentTier);
+type Route = 'app' | 'terms' | 'vip' | 'estab' | 'freela';
 
-      if (plan?.allowAds || ['vip4', 'vip5', 'vip6', 'trial'].includes(currentTier)) {
-        const adsBySlot = pageType === 'freelancers' ? (u.freelancerAdsBySlot || [[], [], []]) : (u.establishmentAdsBySlot || [[], [], []]);
-        const linksBySlot = pageType === 'freelancers' ? (u.freelancerLinksBySlot || [[], [], []]) : (u.establishmentLinksBySlot || [[], [], []]);
-        const rawSlots = pageType === 'freelancers' ? u.allowedFreelancerSlots : u.allowedEstablishmentSlots;
-        const allowedSlots = (rawSlots && rawSlots.length > 0) ? rawSlots : [1, 2, 3];
+function MainContent() {
+  const { currentUser, isAdmin, adminMode } = useApp();
 
-        if (allowedSlots.includes(slot)) {
-          const targetAds = adsBySlot[slotIndex] || [];
-          const targetLinks = linksBySlot[slotIndex] || [];
-          targetAds.forEach((img, imgIndex) => {
-            if (img && typeof img === 'string' && img.trim() !== '') {
-              const link = targetLinks[imgIndex] || '';
-              activeAds.push({ imageUrl: img, linkUrl: link });
-            }
-          });
-        }
-      }
-    }
-  });
+  const getRouteFromPath = (): Route => {
+    const path = window.location.pathname;
+    if (path === '/terms') return 'terms';
+    if (path === '/vip') return 'vip';
+    if (path === '/estab') return 'estab';
+    if (path === '/freela') return 'freela';
+    return 'app';
+  };
 
-  const [currentIndex, setCurrentIndex] = useState(0);
+  const [route, setRoute] = useState<Route>(getRouteFromPath);
 
   useEffect(() => {
-    if (activeAds.length <= 1) return;
-    const timer = setInterval(() => {
-      setCurrentIndex((prev) => (prev + 1) % activeAds.length);
-    }, 4000); 
-    return () => clearInterval(timer);
-  }, [activeAds.length]);
+    const handleLocationChange = () => {
+      setRoute(getRouteFromPath());
+    };
 
-  if (activeAds.length === 0) return null;
+    const originalPushState = window.history.pushState;
+    window.history.pushState = function (state, title, url) {
+      originalPushState.apply(this, [state, title, url]);
+      window.dispatchEvent(new Event('popstate'));
+    };
 
-  const currentAd = activeAds[currentIndex % activeAds.length];
-  
-  // Proporções exatas baseadas no Guia Técnico (Topo 2:1, Centro, etc)
-  const sizeClass = slot === 1 
-    ? 'w-full aspect-[2/1] min-h-[180px] sm:min-h-[240px]' 
-    : slot === 2 
-    ? 'w-full max-w-[380px] h-[250px]' 
-    : 'w-full aspect-[3.3:1] min-h-[120px]';
+    window.addEventListener('popstate', handleLocationChange);
+    return () => {
+      window.removeEventListener('popstate', handleLocationChange);
+      window.history.pushState = originalPushState;
+    };
+  }, []);
+
+  const navigate = (newRoute: Route, path: string) => {
+    window.history.pushState({}, '', path);
+    setRoute(newRoute);
+  };
+
+  if (route === 'terms') {
+    return (
+      <TermsPage
+        onBack={() => {
+          navigate('app', currentUser ? (currentUser.accountType === 'establishment' ? '/estab' : '/freela') : '/');
+        }}
+      />
+    );
+  }
+
+  // Se a rota for /vip, exibe estritamente o VipPanel de Planos VIP
+  if (currentUser && route === 'vip') {
+    return (
+      <VipPanel
+        userId={currentUser.id}
+        accountType={currentUser.accountType}
+        onBack={() => {
+          const homePath = currentUser.accountType === 'establishment' ? '/estab' : '/freela';
+          navigate('app', homePath);
+        }}
+      />
+    );
+  }
+
+  if (!currentUser) {
+    return (
+      <LandingPage
+        onNavigateTerms={() => {
+          navigate('terms', '/terms');
+        }}
+      />
+    );
+  }
+
+  // Identifica o tipo de página para o widget (estabelecimentos ou freelancers)
+  const pageType = currentUser.accountType === 'establishment' ? 'establishments' : 'freelancers';
 
   return (
-    <a 
-      href={currentAd.linkUrl || '#'} 
-      target="_blank" 
-      rel="noopener noreferrer" 
-      className={`relative block overflow-hidden rounded-2xl border border-neutral-200 bg-neutral-900 shadow-lg transition-transform hover:scale-[1.01] dark:border-neutral-800 ${sizeClass}`}
-    >
-      {/* Imagem de Fundo com preenchimento perfeito */}
-      <img 
-        src={currentAd.imageUrl} 
-        alt="Anúncio Patrocinado" 
-        className="absolute inset-0 w-full h-full object-cover opacity-90 transition-opacity duration-500" 
-      />
+    <div className="min-h-screen bg-neutral-50 dark:bg-neutral-950">
       
-      {/* Gradiente escuro para legibilidade e destaque idêntico ao modelo */}
-      <div className="absolute inset-0 bg-gradient-to-t from-neutral-950 via-neutral-950/30 to-transparent" />
-
-      {/* Selo discreto de Patrocinado */}
-      <div className="absolute top-3 right-3 z-10 rounded-md bg-black/60 px-2 py-0.5 text-[10px] font-medium tracking-wide text-neutral-300 backdrop-blur-md">
-        Patrocinado
+      {/* ANÚNCIO NO TOPO (Slot 1) - Antes do Header */}
+      <div className="mx-auto max-w-[1400px] px-4 pt-3 sm:px-6">
+        <VipSquareWidget slot={1} pageType={pageType} />
       </div>
-    </a>
+
+      <Header 
+        onNavigateHome={() => {
+          const homePath = currentUser.accountType === 'establishment' ? '/estab' : '/freela';
+          navigate('app', homePath);
+        }}
+        onNavigateVip={() => {
+          navigate('vip', '/vip');
+        }}
+      />
+      <main className="pb-16">
+        {isAdmin ? (
+          adminMode ? (
+            <AdminView />
+          ) : route === 'estab' || currentUser.accountType === 'establishment' ? (
+            <ContractorView />
+          ) : (
+            <FreelancerView />
+          )
+        ) : route === 'estab' || currentUser.accountType === 'establishment' ? (
+          <ContractorView />
+        ) : (
+          <FreelancerView />
+        )}
+      </main>
+      <footer className="border-t border-neutral-200 py-6 text-center text-xs text-neutral-400 dark:border-neutral-800">
+        FreelaAgora · Plataforma fintech de freelancers · {new Date().getFullYear()}
+      </footer>
+    </div>
+  );
+}
+
+export default function App() {
+  return (
+    <AppProvider>
+      <ToastProvider>
+        <MainContent />
+      </ToastProvider>
+    </AppProvider>
   );
 }
